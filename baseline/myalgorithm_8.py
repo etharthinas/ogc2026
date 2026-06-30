@@ -1,10 +1,4 @@
-# myalgorithm.py  --  SUBMISSION ENTRY POINT (self-contained copy of v8).
-# =============================================================================
-# Imports ONLY the standard library (math, time, random) and `utils` (contest-
-# provided, available via shapely in ogc2026_env.yml). It does NOT import any
-# `myalgorithm_N` helper module, so the grader cannot fail with a missing /
-# "unavailable python package" error when only myalgorithm.py + utils.py ship.
-# To submit a newer version, copy that myalgorithm_N.py over this file.
+# myalgorithm_8.py
 # =============================================================================
 # v8 = v7 (geometry caching) + THOROUGH REPAIR. Caching made each placement
 # cheap, so the improver can now afford a much wider per-block search during

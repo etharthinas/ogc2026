@@ -1,19 +1,4 @@
-# myalgorithm.py  --  SUBMISSION ENTRY POINT (self-contained copy of v8).
-# =============================================================================
-# Imports ONLY the standard library (math, time, random) and `utils` (contest-
-# provided, available via shapely in ogc2026_env.yml). It does NOT import any
-# `myalgorithm_N` helper module, so the grader cannot fail with a missing /
-# "unavailable python package" error when only myalgorithm.py + utils.py ship.
-# To submit a newer version, copy that myalgorithm_N.py over this file.
-# =============================================================================
-# v8 = v7 (geometry caching) + THOROUGH REPAIR. Caching made each placement
-# cheap, so the improver can now afford a much wider per-block search during
-# repair (slot_time_cap 18->40, slot_pos_cap 14->30) -- the exact thing v5 kept
-# tiny purely for speed. Hypothesis: the plateaus v5/v7 hit on the gap instances
-# (prob_39/26/33: relaxed LB far below achieved, yet the improver finds nothing)
-# are partly an artifact of the capped repair search missing the denser packing;
-# a wider repair may escape them. Tested against v7 on the gap set; kept only if
-# it actually lowers the objective (see heuristic_8.md / results.csv).
+# myalgorithm_7.py
 # =============================================================================
 # v7 = v5 + pairwise GEOMETRY CACHING (semantically identical to v5, faster).
 # =============================================================================
@@ -717,7 +702,7 @@ def _improve(prob_info, assignments, bays, bay_u, w1, w2, w3, deadline, forced):
                 ok = False; break
             blk = blocks_data[bi]
             place = _place_block(bi, blk, bays, sched, bay_loads, bay_u, w1, w2, w3,
-                                 forced=forced, slot_time_cap=40, slot_pos_cap=30)
+                                 forced=forced, slot_time_cap=18, slot_pos_cap=14)
             if place is None:
                 place = _force_place(bi, blk, bays, sched)
             _add(sched, bay_loads, work, bi, blk, place)

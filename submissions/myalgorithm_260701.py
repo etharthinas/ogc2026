@@ -1,37 +1,11 @@
-# myalgorithm.py  --  SUBMISSION ENTRY POINT (self-contained copy of v8).
+# myalgorithm.py  --  SUBMISSION ENTRY POINT (self-contained).
 # =============================================================================
-# Imports ONLY the standard library (math, time, random) and `utils` (contest-
-# provided, available via shapely in ogc2026_env.yml). It does NOT import any
-# `myalgorithm_N` helper module, so the grader cannot fail with a missing /
-# "unavailable python package" error when only myalgorithm.py + utils.py ship.
-# To submit a newer version, copy that myalgorithm_N.py over this file.
-# =============================================================================
-# v8 = v7 (geometry caching) + THOROUGH REPAIR. Caching made each placement
-# cheap, so the improver can now afford a much wider per-block search during
-# repair (slot_time_cap 18->40, slot_pos_cap 14->30) -- the exact thing v5 kept
-# tiny purely for speed. Hypothesis: the plateaus v5/v7 hit on the gap instances
-# (prob_39/26/33: relaxed LB far below achieved, yet the improver finds nothing)
-# are partly an artifact of the capped repair search missing the denser packing;
-# a wider repair may escape them. Tested against v7 on the gap set; kept only if
-# it actually lowers the objective (see heuristic_8.md / results.csv).
-# =============================================================================
-# v7 = v5 + pairwise GEOMETRY CACHING (semantically identical to v5, faster).
-# =============================================================================
-# Diagnosis: on the packing-limited instances (relaxed LB << v5 result, e.g.
-# prob_35/28/31/30/23/39) more improver rounds keep lowering tardiness
-# (prob_35: 14.6M@60s -> 11.4M@150s), but v5 is round-starved because every
-# placement check rebuilds Shapely intersections. v7 memoizes the three
-# pairwise feasibility primitives -- collision, crane-entry obstruction, crane-
-# exit obstruction -- keyed by the two placements' (block_id, orient, x, y).
-# These are pure geometry (time-independent) and SEPARABLE per existing block
-# (the crane path is blocked iff ANY single present block blocks it), so the
-# cache is exact: v7 returns the SAME feasibility verdict as v5 for every call,
-# just far cheaper after warm-up -> many more destroy/repair rounds per second
-# on the instances where that converts directly into less tardiness. The final
-# solution is still verified by the official check_feasibility, unchanged.
-# (Structurally over-subscribed instances prob_38/27 -- area-time demand exceeds
-#  total capacity-time over the whole horizon -- stay near their forced floor;
-#  no heuristic removes their tardiness. See heuristic_7.md / results.csv.)
+# Standalone copy of the current best algorithm (v5). Imports ONLY the Python
+# standard library (math, time, random) and `utils` (contest-provided, available
+# via shapely in ogc2026_env.yml). It does NOT import any `myalgorithm_N` helper
+# module, so the submission cannot fail with a missing / "unavailable python
+# package" error when only myalgorithm.py + utils.py are shipped. To ship a newer
+# version, copy that myalgorithm_N.py over this file.
 # =============================================================================
 # v5: v3's full thorough construction (NO cap) + fast basin-hopping improver.
 # =============================================================================
@@ -71,78 +45,6 @@ from utils import (
     check_entry, check_exit, check_collisions, check_feasibility,
     _resolve_layers, _bounding_box, _bb_overlap,
 )
-
-# -----------------------------------------------------------------------------
-# Pairwise geometry caches (v7). Keyed by placement = (block_id, orient, x, y).
-# Pure geometry, time-independent. Cleared per instance in algorithm().
-#   _BLK : (bi, oi, x, y)                  -> reusable Block (avoids re-translate)
-#   _CC  : frozenset{key_a, key_b}         -> do a, b spatially collide (any layer)
-#   _CE  : (existing_key, mover_key)       -> does `existing` block `mover`'s ENTRY
-#   _CX  : (existing_key, mover_key)       -> does `existing` block `mover`'s EXIT
-# A pair-cache is exact because check_collisions/entry/exit are separable: a
-# multi-block verdict is the OR of the single-block verdicts. Bay boundary is
-# checked separately via bay.contains_block before any crane call, so the
-# self-boundary obstruction never appears here.
-# -----------------------------------------------------------------------------
-_BLK = {}
-_CC = {}
-_CE = {}
-_CX = {}
-_CACHE_CAP = 6_000_000  # safety bound; stop growing caches past this (rare)
-
-
-def _reset_caches():
-    _BLK.clear(); _CC.clear(); _CE.clear(); _CX.clear()
-
-
-def _mkblock(bi, blk_data, x, y, oi):
-    k = (bi, oi, x, y)
-    nb = _BLK.get(k)
-    if nb is None:
-        nb = Block(block_id=bi, block_data=blk_data, x=x, y=y, orient_idx=oi)
-        if len(_BLK) < _CACHE_CAP:
-            _BLK[k] = nb
-    return nb
-
-
-def _pk(blk):
-    return (blk.block_id, blk.orient_idx, blk.x, blk.y)
-
-
-def _collide(bay, a, b):
-    ka, kb = _pk(a), _pk(b)
-    key = (ka, kb) if ka <= kb else (kb, ka)
-    v = _CC.get(key)
-    if v is None:
-        v = bool(check_collisions(bay, [a, b]))
-        if len(_CC) < _CACHE_CAP:
-            _CC[key] = v
-    return v
-
-
-def _entry_blocked(bay, existing, mover):
-    """True iff `existing` obstructs `mover`'s crane descent (== v5's
-    check_entry(bay, [existing], mover) being non-empty)."""
-    key = (_pk(existing), _pk(mover))
-    v = _CE.get(key)
-    if v is None:
-        v = bool(check_entry(bay, [existing], mover, fast=True))
-        if len(_CE) < _CACHE_CAP:
-            _CE[key] = v
-    return v
-
-
-def _exit_blocked(bay, existing, mover):
-    """True iff `existing` obstructs `mover`'s crane ascent (== v5's
-    check_exit(bay, [existing], mover) being non-empty)."""
-    key = (_pk(existing), _pk(mover))
-    v = _CX.get(key)
-    if v is None:
-        v = bool(check_exit(bay, [existing], mover, fast=True))
-        if len(_CX) < _CACHE_CAP:
-            _CX[key] = v
-    return v
-
 
 # -----------------------------------------------------------------------------
 # Static per-block geometry helpers (verbatim from v2)
@@ -235,32 +137,24 @@ def _present_at_exit(t, x_id, sched):
 
 
 def _can_place(bay, sched, new_blk, entry, exit_t):
-    # v7: identical verdict to v5, but every Shapely call is routed through the
-    # pairwise caches. check_entry/exit over a SET of present blocks is the OR of
-    # the per-block checks, so we decompose into cached pairwise queries.
     if not bay.contains_block(new_blk):
         return False
-    nbid = new_blk.block_id
-    # new_blk ENTRY obstructed by any block present at `entry` (== check_entry
-    # over _present_at_entry set).
+    full = sched + [(new_blk, entry, exit_t)]
+    pres = _present_at_entry(entry, new_blk.block_id, full)
+    if check_entry(bay, pres, new_blk, fast=True):
+        return False
+    pres = _present_at_exit(exit_t, new_blk.block_id, full)
+    if check_exit(bay, pres, new_blk, fast=True):
+        return False
     for b, a, e in sched:
-        if (a < entry < e) or (a == entry and b.block_id < nbid):
-            if _entry_blocked(bay, b, new_blk):
-                return False
-    # new_blk EXIT obstructed by any block present at `exit_t` (== check_exit
-    # over _present_at_exit set).
-    for b, a, e in sched:
-        if (a < exit_t < e) or (e == exit_t and b.block_id > nbid):
-            if _exit_blocked(bay, b, new_blk):
-                return False
-    for b, a, e in sched:
-        if _overlaps(entry, exit_t, a, e) and _collide(bay, new_blk, b):
+        co_time = _overlaps(entry, exit_t, a, e)
+        if co_time and check_collisions(bay, [new_blk, b]):
             return False
-        if (entry < a < exit_t) or (entry == a and nbid < b.block_id):
-            if _entry_blocked(bay, new_blk, b):
+        if (entry < a < exit_t) or (entry == a and new_blk.block_id < b.block_id):
+            if check_entry(bay, [new_blk], b, fast=True):
                 return False
-        if (entry < e < exit_t) or (exit_t == e and nbid > b.block_id):
-            if _exit_blocked(bay, new_blk, b):
+        if (entry < e < exit_t) or (exit_t == e and new_blk.block_id > b.block_id):
+            if check_exit(bay, [new_blk], b, fast=True):
                 return False
     return True
 
@@ -348,7 +242,7 @@ def _find_earliest_slot(bay, sched_bay, bi, blk, orients, lb, proc,
                 continue
             blk_bb = _orient_bbox(blk, oi)
             for (cx, cy) in _candidate_positions(bay, active, blk_bb, cap=pos_cap):
-                nb = _mkblock(bi, blk, cx, cy, oi)
+                nb = Block(block_id=bi, block_data=blk, x=cx, y=cy, orient_idx=oi)
                 if _can_place(bay, relx, nb, t, exit_t):
                     return (oi, cx, cy, t)
     return None
@@ -482,7 +376,7 @@ def _place_block(bi, blk, bays, sched, bay_loads, bay_u, w1, w2, w3,
                 blk_bb = _orient_bbox(blk, oi)
                 active = [it[0] for it in sched[bay_id] if it[2] > release]
                 for (cx, cy) in _candidate_positions(bay, active, blk_bb, cap=pos_cap):
-                    nb = _mkblock(bi, blk, cx, cy, oi)
+                    nb = Block(block_id=bi, block_data=blk, x=cx, y=cy, orient_idx=oi)
                     entry = _find_zero_slot(bay, sched[bay_id], nb, release, due, proc)
                     if entry is None:
                         continue
@@ -524,7 +418,7 @@ def _place_block(bi, blk, bays, sched, bay_loads, bay_u, w1, w2, w3,
                 blk_bb = _orient_bbox(blk, oi)
                 active = [it[0] for it in sched[bay_id] if it[2] > release]
                 for (cx, cy) in _candidate_positions(bay, active, blk_bb, cap=12):
-                    nb = _mkblock(bi, blk, cx, cy, oi)
+                    nb = Block(block_id=bi, block_data=blk, x=cx, y=cy, orient_idx=oi)
                     entry = _find_tardy_slot(bay, sched[bay_id], nb, release, due,
                                              proc, tardy_cap=tardy_cap)
                     if entry is None:
@@ -561,7 +455,7 @@ def _force_place(bi, blk, bays, sched):
 
 def _add(sched, bay_loads, assignments, bi, blk, place):
     bay_id, cx, cy, oi, entry, exit_t = place
-    nb = _mkblock(bi, blk, cx, cy, oi)
+    nb = Block(block_id=bi, block_data=blk, x=cx, y=cy, orient_idx=oi)
     sched[bay_id].append((nb, entry, exit_t, nb.bounding_rect()))
     bay_loads[bay_id] += blk["workload"]
     assignments[bi] = {
@@ -600,7 +494,8 @@ def _rebuild_sched(assignments, blocks_data, n_bays):
     sched = [[] for _ in range(n_bays)]
     bay_loads = [0.0] * n_bays
     for bi, a in assignments.items():
-        nb = _mkblock(bi, blocks_data[bi], a["x"], a["y"], a["orient_idx"])
+        nb = Block(block_id=bi, block_data=blocks_data[bi],
+                   x=a["x"], y=a["y"], orient_idx=a["orient_idx"])
         sched[a["bay_id"]].append((nb, a["entry_time"], a["exit_time"], nb.bounding_rect()))
         bay_loads[a["bay_id"]] += blocks_data[bi]["workload"]
     return sched, bay_loads
@@ -717,7 +612,7 @@ def _improve(prob_info, assignments, bays, bay_u, w1, w2, w3, deadline, forced):
                 ok = False; break
             blk = blocks_data[bi]
             place = _place_block(bi, blk, bays, sched, bay_loads, bay_u, w1, w2, w3,
-                                 forced=forced, slot_time_cap=40, slot_pos_cap=30)
+                                 forced=forced, slot_time_cap=18, slot_pos_cap=14)
             if place is None:
                 place = _force_place(bi, blk, bays, sched)
             _add(sched, bay_loads, work, bi, blk, place)
@@ -804,7 +699,6 @@ def _is_forced(prob_info, bays):
 
 def algorithm(prob_info, timelimit=60):
     t_start = time.time()
-    _reset_caches()  # v7: caches hold instance-specific geometry; never share.
     # Reserve a slice at the end for the official feasibility check(s).
     reserve = min(max(4.0, timelimit * 0.08), 12.0)
     search_deadline = t_start + timelimit * 0.95 - reserve
