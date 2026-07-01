@@ -1,5 +1,5 @@
-# myalgorithm.py  --  SUBMISSION ENTRY POINT (self-contained copy of v9 =
-#   MULTI-START (EDD+AREA) CONSTRUCTION + REGRESSION-SAFE TWO-PASS IMPROVER).
+# myalgorithm_9.py  --  v9 = v8 + MULTI-START (EDD+AREA) CONSTRUCTION +
+#                        REGRESSION-SAFE TWO-PASS IMPROVER.
 # =============================================================================
 # Imports ONLY the standard library (math, time, random) and `utils` (contest-
 # provided, available via shapely in ogc2026_env.yml). It does NOT import any
