@@ -134,6 +134,16 @@ Validated at 300s (v9-dual vs the earlier single-improver v9 / vs v8):
 | prob_38 | 94,292,570 | 94,292,570 | round-starved giant: no regression (improver early-stops) |
 | prob_39 | 27,053,638 | 27,053,638 | gain kept |
 
-Net −1.13M vs the single-improver full-40 (300,400,756) → final full-40 ~299.3M,
-under the 300M goal. Final total recorded in results.csv row `algorithm 9`.
+Net −1.13M vs the single-improver full-40 (300,400,756). The two-pass improver
+also picked up extra gains beyond the validation set (notably prob_31
+18.90M->17.64M, −1.26M, and a stronger prob_30 11.14M), so the final full-40 came
+in even lower.
+
+## FINAL RESULT (results.csv row `algorithm 9`)
+**Full-40 @300s = 297,827,281, 40/40 feasible** — UNDER the 300M goal, −13.33M
+(−4.3%) vs v8's 311,159,140. Biggest movers vs v8: prob_27 −3.48M, prob_30
+−3.25M, prob_39 −2.69M (frozen across v3..v8 until AREA), prob_26 −1.87M,
+prob_31 −1.26M, prob_33 −0.55M, prob_34 −0.32M, prob_23 −0.42M; small residual
+regressions prob_32 +0.37M, prob_25 +0.08M (low-w1, obj2/obj3-dominated).
+Progression: v1 1.067B -> v3 442M -> v5 318M -> v8 311M -> **v9 297.8M**.
 </content>
