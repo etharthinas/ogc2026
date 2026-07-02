@@ -1,32 +1,11 @@
-# myalgorithm.py  --  SUBMISSION ENTRY POINT (self-contained). v10 = v9 + 4-CORE PARALLEL PORTFOLIO
-#   (W0 exact-v9-replica anchor / W1 AREA+full improver / W2 basin lottery /
-#    W3 congestion-aware construction; parent = min over workers, verified).
+# myalgorithm.py  --  SUBMISSION ENTRY POINT (self-contained copy of v9 =
+#   MULTI-START (EDD+AREA) CONSTRUCTION + REGRESSION-SAFE TWO-PASS IMPROVER).
 # =============================================================================
-# Imports ONLY the standard library (math, time, random, multiprocessing) and
-# `utils` (contest-provided, available via shapely in ogc2026_env.yml). It does
-# NOT import any `myalgorithm_N` helper module, so the grader cannot fail with a
-# missing package error when only myalgorithm.py + utils.py ship.
+# Imports ONLY the standard library (math, time, random) and `utils` (contest-
+# provided, available via shapely in ogc2026_env.yml). It does NOT import any
+# `myalgorithm_N` helper module, so the grader cannot fail with a missing /
+# "unavailable python package" error when only myalgorithm.py + utils.py ship.
 # To submit a newer version, copy that myalgorithm_N.py over this file.
-# =============================================================================
-# v10 (see heuristic_10.md). Two structural observations:
-#  1. The eval server allows 4 CPU cores; v9 used ONE. All of v9's compromises
-#     (two-pass 35/65 improver split, CON_FRAC construction cap, the
-#     construction-cheap gate) are single-budget rationing artifacts. v10 runs a
-#     PARALLEL PORTFOLIO of min(4,cpu) worker processes, each an independent
-#     full-budget strategy streaming best-so-far assignments to the parent via a
-#     queue; the parent picks the best by internal objective and verifies it
-#     officially (best-first, empty-bay fallback). Strategies (forced):
-#     W0 EDD->improve (v8 anchor), W1 AREA->improve (v9's giant-winner, now with
-#     the FULL budget), W2 congestion-aware construction -> improve, W3 jitter
-#     multi-start -> simulated-annealing improve. Experimental members are
-#     regression-safe: the parent takes the min over workers. Falls back to
-#     v9's single-thread path if multiprocessing is unavailable.
-#  2. Bay-assignment myopia is a CONSTRUCTION bug: in Pass A, w1-dominant
-#     instances take the FIRST preferred bay with a zero-tardiness slot,
-#     congesting it so later blocks spill into tardiness (prob_39 fluid-LB 1.3M
-#     vs 27M achieved). W2 scores ALL bays' zero-slots and adds a window-
-#     utilization penalty (util_gamma * w1 * util) so the greedy pays an
-#     anticipatory price for stuffing a crowded bay while spreading is free.
 # =============================================================================
 # v9. The residual loss after v8 was dominated by instances byte-identical across
 # v3..v8 (prob_27/30/35/39): these are deterministic EDD constructions the
@@ -129,13 +108,7 @@ _BLK = {}
 _CC = {}
 _CE = {}
 _CX = {}
-# v10: worker processes share 16GB (both locally and on the eval server), so
-# the v9 unlimited-growth caches (6M) must be bounded. Measured on prob_38 (the
-# heaviest instance): one dense EDD build needs ~192k _BLK entries and >1M _CE
-# entries (~1.5GB RSS); a worker fits comfortably under these caps, and the
-# giant instances run only 2 workers (see _algorithm_portfolio).
-_BLK_CAP = 250_000
-_CACHE_CAP = 2_500_000
+_CACHE_CAP = 6_000_000  # safety bound; stop growing caches past this (rare)
 
 
 def _reset_caches():
@@ -147,7 +120,7 @@ def _mkblock(bi, blk_data, x, y, oi):
     nb = _BLK.get(k)
     if nb is None:
         nb = Block(block_id=bi, block_data=blk_data, x=x, y=y, orient_idx=oi)
-        if len(_BLK) < _BLK_CAP:
+        if len(_BLK) < _CACHE_CAP:
             _BLK[k] = nb
     return nb
 
@@ -518,23 +491,9 @@ def _objective(assignments, blocks_data, bays, bay_u, w1, w2, w3):
 # Thorough placement of one block (verbatim from v2)
 # -----------------------------------------------------------------------------
 
-def _window_util(sched_bay, entry, exit_t, bay_area):
-    """Fraction of the bay's area-time committed inside [entry, exit_t) by
-    already-placed blocks (bbox areas; cheap anticipatory congestion signal)."""
-    span = max(1, exit_t - entry)
-    occ = 0.0
-    for it in sched_bay:
-        a, e, bb = it[1], it[2], it[3]
-        ov = min(exit_t, e) - max(entry, a)
-        if ov > 0:
-            occ += (bb[2] - bb[0]) * (bb[3] - bb[1]) * ov
-    return occ / (bay_area * span)
-
-
 def _place_block(bi, blk, bays, sched, bay_loads, bay_u, w1, w2, w3,
                  pos_cap=40, tardy_cap=8, dense=True, forced=False,
-                 bay_order=None, slot_time_cap=40, slot_pos_cap=24,
-                 util_gamma=0.0):
+                 bay_order=None, slot_time_cap=40, slot_pos_cap=24):
     release = int(blk["release_time"])
     due = int(blk["due_date"])
     proc = int(blk["processing_time"])
@@ -543,21 +502,14 @@ def _place_block(bi, blk, bays, sched, bay_loads, bay_u, w1, w2, w3,
     s_max = max(prefs)
     orients = _unique_orients(blk)
     n_bays = len(bays)
-    # v10: util_gamma > 0 disables the first-preferred-bay-wins shortcut so ALL
-    # bays' zero-slots compete on score (incl. the congestion penalty below).
-    w1_dominant = util_gamma <= 0.0 and w1 >= 20.0 * max(w2, w3, 1e-9)
+    w1_dominant = w1 >= 20.0 * max(w2, w3, 1e-9)
 
-    def score(tardiness, bay_id, top_y, entry=None, exit_t=None):
+    def score(tardiness, bay_id, top_y):
         new_load = bay_loads[bay_id] + workload
         imbal = max((abs(bay_u[bay_id] * new_load - bay_u[j] * bay_loads[j])
                      for j in range(n_bays) if j != bay_id), default=0.0)
-        sc = (w1 * tardiness + w2 * imbal + w3 * (s_max - prefs[bay_id])
-              + 1e-4 * top_y)
-        if util_gamma > 0.0 and entry is not None:
-            bay = bays[bay_id]
-            sc += util_gamma * w1 * _window_util(
-                sched[bay_id], entry, exit_t, bay.width * bay.height)
-        return sc
+        return (w1 * tardiness + w2 * imbal + w3 * (s_max - prefs[bay_id])
+                + 1e-4 * top_y)
 
     if bay_order is None:
         bay_order = sorted(range(n_bays), key=lambda j: prefs[j], reverse=True)
@@ -579,8 +531,7 @@ def _place_block(bi, blk, bays, sched, bay_loads, bay_u, w1, w2, w3,
                     entry = _find_zero_slot(bay, sched[bay_id], nb, release, due, proc)
                     if entry is None:
                         continue
-                    sc = score(0.0, bay_id, top_y=cy + blk_bb[3],
-                               entry=entry, exit_t=entry + proc)
+                    sc = score(0.0, bay_id, top_y=cy + blk_bb[3])
                     if sc < best_score:
                         best_score = sc
                         best = (bay_id, cx, cy, oi, entry, entry + proc)
@@ -605,8 +556,7 @@ def _place_block(bi, blk, bays, sched, bay_loads, bay_u, w1, w2, w3,
             oi, cx, cy, entry = slot
             exit_t = entry + proc
             blk_bb = _orient_bbox(blk, oi)
-            sc = score(max(0.0, exit_t - due), bay_id, top_y=cy + blk_bb[3],
-                       entry=entry, exit_t=exit_t)
+            sc = score(max(0.0, exit_t - due), bay_id, top_y=cy + blk_bb[3])
             if sc < best_score:
                 best_score = sc
                 best = (bay_id, cx, cy, oi, entry, exit_t)
@@ -625,8 +575,7 @@ def _place_block(bi, blk, bays, sched, bay_loads, bay_u, w1, w2, w3,
                     if entry is None:
                         continue
                     exit_t = entry + proc
-                    sc = score(max(0.0, exit_t - due), bay_id, top_y=cy + blk_bb[3],
-                               entry=entry, exit_t=exit_t)
+                    sc = score(max(0.0, exit_t - due), bay_id, top_y=cy + blk_bb[3])
                     if sc < best_score:
                         best_score = sc
                         best = (bay_id, cx, cy, oi, entry, exit_t)
@@ -667,7 +616,7 @@ def _add(sched, bay_loads, assignments, bi, blk, place):
 
 
 def _construct(prob_info, order, bays, bay_u, w1, w2, w3, t_start, deadline,
-               forced=False, util_gamma=0.0):
+               forced=False):
     blocks_data = prob_info["blocks"]
     n_bays = len(bays)
     sched = [[] for _ in range(n_bays)]
@@ -680,8 +629,7 @@ def _construct(prob_info, order, bays, bay_u, w1, w2, w3, t_start, deadline,
         remaining = n - idx
         dense = time_left > 0 and (time_left / remaining) > 0.25
         place = _place_block(bi, blk, bays, sched, bay_loads, bay_u,
-                             w1, w2, w3, dense=dense, forced=forced,
-                             util_gamma=util_gamma)
+                             w1, w2, w3, dense=dense, forced=forced)
         if place is None:
             place = _force_place(bi, blk, bays, sched)
         _add(sched, bay_loads, assignments, bi, blk, place)
@@ -813,17 +761,13 @@ def _destroy_window(cur, blocks_data, rng):
     return removed if removed else {seed}
 
 
-def _improve(prob_info, assignments, bays, bay_u, w1, w2, w3, deadline, forced,
-             seed=4242, sa=False, on_best=None):
+def _improve(prob_info, assignments, bays, bay_u, w1, w2, w3, deadline, forced):
     """Basin-hopping destroy/repair. Tracks `best` separately from the working
     `cur`; returns `best` -> monotone in the RESULT. Diversifies destroy mode and
     repair ordering, and applies an escape "kick" (a larger destroy accepted even
     if worse) after a plateau, to break out of local structures the pure
     hill-climber (v3) gets stuck in (prob_39). Compares by the cheap internal
-    objective; the caller verifies the returned solution officially.
-    v10: `seed` diversifies portfolio workers; `sa` enables simulated-annealing
-    acceptance of worse repairs (explorer worker); `on_best(obj, assign)` streams
-    new incumbents to the parent process."""
+    objective; the caller verifies the returned solution officially."""
     blocks_data = prob_info["blocks"]
     n = len(assignments)
     n_bays = len(bays)
@@ -837,12 +781,7 @@ def _improve(prob_info, assignments, bays, bay_u, w1, w2, w3, deadline, forced,
                    if a["exit_time"] > blocks_data[bi]["due_date"])
 
     best_tardy = _tardy_count(best_assign)
-    rng = random.Random(seed)
-    # SA temperature: a small fraction of the current objective so that typical
-    # repair deltas (a few tardy time-units * w1) are accepted early on, with
-    # geometric cooling and a reheat on long stalls.
-    T0 = max(1.0, 0.01 * best_obj) if sa else 0.0
-    T = T0
+    rng = random.Random(4242)
     rounds = 0
     no_improve = 0      # for kick triggering (kicks reset this)
     since_best = 0      # rounds since best improved (kicks do NOT reset this)
@@ -942,26 +881,15 @@ def _improve(prob_info, assignments, bays, bay_u, w1, w2, w3, deadline, forced,
         if not ok or len(work) != n:
             continue
         new_obj, new_o1, _, _ = _objective(work, blocks_data, bays, bay_u, w1, w2, w3)
-        accept = new_obj < cur_obj - 1e-9 or kick or restart
-        if not accept and sa and T > 1e-9:
-            delta = new_obj - cur_obj
-            if delta / T < 30 and rng.random() < math.exp(-delta / T):
-                accept = True
-        if accept:
+        if new_obj < cur_obj - 1e-9 or kick or restart:
             cur = work
             cur_obj = new_obj
-        if sa:
-            T *= 0.995
-            if since_best >= 60:
-                T = T0  # reheat after a long stall
         if new_obj < best_obj - 1e-9:
             best_obj = new_obj
             best_assign = {k: dict(v) for k, v in work.items()}
             best_tardy = _tardy_count(best_assign)
             no_improve = 0
             since_best = 0
-            if on_best is not None:
-                on_best(best_obj, best_assign)
         else:
             no_improve = 0 if (kick or restart) else no_improve + 1
             since_best += 1
@@ -1037,16 +965,12 @@ def _is_forced(prob_info, bays):
 
 
 # -----------------------------------------------------------------------------
-# v9 search pipeline (exact replica). Used BOTH by the single-thread fallback
-# and by portfolio worker W0: the improver is extremely basin-sensitive (on
-# prob_31, EDD+improve plateaus at 19.09M while v9's jittered-construction
-# improve reached 17.64M), so preserving v9's exact multi-start rng stream and
-# two-pass improver is what guarantees v10 never loses a v9 result.
+# Required entry point
 # -----------------------------------------------------------------------------
 
-def _v9_search(prob_info, timelimit, t_start, push=None):
-    """Runs v9's whole search; returns the candidate list [(obj, assign)] and
-    streams every candidate/incumbent through push(obj, assign) if given."""
+def algorithm(prob_info, timelimit=60):
+    t_start = time.time()
+    _reset_caches()  # v7: caches hold instance-specific geometry; never share.
     # Reserve a slice at the end for the official feasibility check(s).
     reserve = min(max(4.0, timelimit * 0.08), 12.0)
     search_deadline = t_start + timelimit * 0.95 - reserve
@@ -1064,13 +988,6 @@ def _v9_search(prob_info, timelimit, t_start, push=None):
     # All candidates scored by the CHEAP internal objective; the single best is
     # verified once at the end (no per-strategy check_feasibility -> no overrun).
     candidates = []  # (internal_obj, assign)
-
-    def emit(assign):
-        o = iobj(assign)
-        candidates.append((o, assign))
-        if push is not None:
-            push(o, assign)
-
     edd_assign = None  # the plain-EDD construction (forced): always improved so
     #                    v9 never regresses below v8 on improver-dependent instances
 
@@ -1099,7 +1016,7 @@ def _v9_search(prob_info, timelimit, t_start, push=None):
                                 t_start, search_deadline, forced=True)
             t_first = time.time() - t0c
             edd_assign = assign
-            emit(assign)
+            candidates.append((iobj(assign), assign))
         except Exception:
             pass
         # Multi-start ONLY on "construction-cheap" instances -- those whose first
@@ -1140,7 +1057,7 @@ def _v9_search(prob_info, timelimit, t_start, push=None):
                 gi += 1
                 assign = _construct(prob_info, order, bays, bay_u, w1, w2, w3,
                                     t_start, search_deadline, forced=True)
-                emit(assign)
+                candidates.append((iobj(assign), assign))
             except Exception:
                 break
     else:
@@ -1152,7 +1069,7 @@ def _v9_search(prob_info, timelimit, t_start, push=None):
             try:
                 assign = _construct(prob_info, order, bays, bay_u, w1, w2, w3,
                                     t_start, search_deadline, forced=fc)
-                emit(assign)
+                candidates.append((iobj(assign), assign))
             except Exception:
                 pass
         rng = random.Random(2026)
@@ -1163,8 +1080,8 @@ def _v9_search(prob_info, timelimit, t_start, push=None):
                 order = _edd_order(blocks_data, jitter=rng)
                 assign = _construct(prob_info, order, bays, bay_u, w1, w2, w3,
                                     t_start, search_deadline, forced=forced)
-                emit(assign)
-                o = candidates[-1][0]
+                o = iobj(assign)
+                candidates.append((o, assign))
                 if o < best_so_far - 1e-9:
                     best_so_far = o; stale = 0
                 else:
@@ -1192,52 +1109,26 @@ def _v9_search(prob_info, timelimit, t_start, push=None):
                 # 65% for the AREA pass so the giants keep their full polish.
                 mid = time.time() + (search_deadline - time.time()) * 0.35
                 r1, o1 = _improve(prob_info, edd_assign, bays, bay_u,
-                                  w1, w2, w3, mid, forced, on_best=push)
+                                  w1, w2, w3, mid, forced)
                 candidates.append((o1, r1))
-                if push is not None:
-                    push(o1, r1)
                 for o_raw, a_raw in sorted(candidates, key=lambda c: c[0]):
                     if a_raw is edd_assign or a_raw is r1:
                         continue
                     if o_raw < o1 - 1e-9:  # a raw construction already beats EDD+improve
                         r2, o2 = _improve(prob_info, a_raw, bays, bay_u,
-                                          w1, w2, w3, search_deadline, forced,
-                                          on_best=push)
+                                          w1, w2, w3, search_deadline, forced)
                         candidates.append((o2, r2))
-                        if push is not None:
-                            push(o2, r2)
                     break
             else:
                 improved, iobj_imp = _improve(prob_info, candidates[0][1], bays, bay_u,
-                                              w1, w2, w3, search_deadline, forced,
-                                              on_best=push)
+                                              w1, w2, w3, search_deadline, forced)
                 candidates.append((iobj_imp, improved))
-                if push is not None:
-                    push(iobj_imp, improved)
         except Exception:
             pass
-    return candidates
-
-
-def _algorithm_single(prob_info, timelimit=60, t_start=None):
-    """v9 pipeline: search, then verify best-first (no-multiprocessing fallback)."""
-    if t_start is None:
-        t_start = time.time()
-    _reset_caches()  # v7: caches hold instance-specific geometry; never share.
-    bays = [Bay.from_dict(d, i) for i, d in enumerate(prob_info["bays"])]
-    blocks_data = prob_info["blocks"]
-    w = prob_info.get("weights", {})
-    w1, w2, w3 = w.get("w1", 1.0), w.get("w2", 1.0), w.get("w3", 1.0)
-    bay_u = _bay_u(bays)
-    try:
-        candidates = _v9_search(prob_info, timelimit, t_start)
-    except Exception:
-        candidates = []
 
     # Verify candidates best-first; return the first officially-feasible one.
     fallback = _empty_bay_solution(prob_info, bays)
-    candidates.append((_objective(fallback, blocks_data, bays, bay_u,
-                                  w1, w2, w3)[0], fallback))
+    candidates.append((iobj(fallback), fallback))
     candidates.sort(key=lambda c: c[0])
     for _, assign in candidates:
         sol = {"operations": _build_operations(assign)}
@@ -1249,259 +1140,3 @@ def _algorithm_single(prob_info, timelimit=60, t_start=None):
             return sol
     # Last resort: empty-bay (structurally feasible).
     return {"operations": _build_operations(fallback)}
-
-
-# -----------------------------------------------------------------------------
-# v10 parallel portfolio
-# -----------------------------------------------------------------------------
-
-def _run_strategy(wid, prob_info, timelimit, t_start, push):
-    """One portfolio member. Streams (internal_obj, assignments) via push()."""
-    reserve = min(max(4.0, timelimit * 0.08), 12.0)
-    deadline = t_start + timelimit * 0.95 - reserve - 2.5  # margin for final put
-    bays = [Bay.from_dict(d, i) for i, d in enumerate(prob_info["bays"])]
-    blocks_data = prob_info["blocks"]
-    w = prob_info.get("weights", {})
-    w1, w2, w3 = w.get("w1", 1.0), w.get("w2", 1.0), w.get("w3", 1.0)
-    bay_u = _bay_u(bays)
-    forced = _is_forced(prob_info, bays)
-    window = deadline - t_start
-
-    def iobj(assign):
-        return _objective(assign, blocks_data, bays, bay_u, w1, w2, w3)[0]
-
-    def build(order, fc, gamma=0.0):
-        a = _construct(prob_info, order, bays, bay_u, w1, w2, w3,
-                       t_start, deadline, forced=fc, util_gamma=gamma)
-        o = iobj(a)
-        push(o, a)
-        return o, a
-
-    def improve(assign, seed, sa=False):
-        r, o = _improve(prob_info, assign, bays, bay_u, w1, w2, w3,
-                        deadline, forced, seed=seed, sa=sa, on_best=push)
-        push(o, r, force=True)
-        return o, r
-
-    if wid == 0:
-        # W0 = EXACT v9 replica (same rng streams, same two-pass improver).
-        # This is the no-regression anchor: the improver is basin-sensitive, so
-        # only replaying v9's exact construction sequence guarantees v10 keeps
-        # every v9 result (e.g. prob_31 17.64M comes from improving a jittered
-        # construction that no plain EDD/AREA basin reaches). The worker gets a
-        # slightly earlier deadline than v9's own (margin for the final put).
-        _v9_search(prob_info, timelimit - 2.5, t_start, push=push)
-        return
-
-    if forced:
-        if wid == 1:
-            # v9's giant-winner basin with the FULL budget instead of 65% of
-            # the post-construction reserve.
-            _, a = build(_area_order(blocks_data), True)
-            improve(a, seed=777)
-        elif wid == 2:
-            # Basin lottery: jittered EDD/AREA multi-start with a different rng
-            # than W0's, improve the best. Samples more of the construction
-            # space that produced v9's luckiest results.
-            rng = random.Random(1414)
-            cands = []
-            cap = t_start + 0.5 * window
-            gens = [lambda: _edd_order(blocks_data, jitter=rng),
-                    lambda: _area_order(blocks_data, jitter=rng)]
-            gi = 0
-            while True:
-                try:
-                    cands.append(build(gens[gi % 2](), True))
-                except Exception:
-                    break
-                gi += 1
-                if time.time() >= cap:
-                    break
-            if cands:
-                improve(min(cands, key=lambda c: c[0])[1], seed=555)
-        else:
-            # Congestion-aware constructions (kills Pass-A first-preferred-wins;
-            # pays an anticipatory price for stuffing crowded bays). gamma=0.5
-            # measured best on prob_39 (28.97M vs 29.75M plain EDD); larger
-            # gammas over-spread. Jitter around it, improve the best.
-            rng = random.Random(1313)
-            G = 0.5
-            cands = []
-            cap = t_start + 0.55 * window
-            for order_fn in (lambda: _edd_order(blocks_data),
-                             lambda: _area_order(blocks_data),
-                             lambda: _edd_order(blocks_data, jitter=rng),
-                             lambda: _area_order(blocks_data, jitter=rng),
-                             lambda: _edd_order(blocks_data, jitter=rng)):
-                try:
-                    cands.append(build(order_fn(), True, G))
-                except Exception:
-                    pass
-                if time.time() >= cap:
-                    break
-            if cands:
-                improve(min(cands, key=lambda c: c[0])[1], seed=1313)
-    else:
-        # Non-forced instances: v9's thorough congestion+EDD+jitter recipe,
-        # seed/order-diversified across workers; W3 adds util_gamma.
-        edd = _edd_order(blocks_data)
-        cong = _congestion_order(blocks_data)
-        plans = {
-            1: ([(edd, True, 0.0), (cong, False, 0.0)], 111, 777),
-            2: ([(cong, False, 0.0), (edd, True, 0.0)], 1414, 555),
-            3: ([(cong, False, 0.5), (edd, True, 0.5)], 1313, 1313),
-        }
-        starts, jseed, iseed = plans[1 + (wid - 1) % 3]
-        cands = []
-        for order, fc, gamma in starts:
-            if time.time() >= deadline:
-                break
-            try:
-                cands.append(build(order, fc, gamma))
-            except Exception:
-                pass
-        rng = random.Random(jseed)
-        stale = 0
-        best_so_far = min((c[0] for c in cands), default=float("inf"))
-        while time.time() < deadline and stale < 4:
-            try:
-                o, a = build(_edd_order(blocks_data, jitter=rng), forced)
-                cands.append((o, a))
-                if o < best_so_far - 1e-9:
-                    best_so_far = o
-                    stale = 0
-                else:
-                    stale += 1
-            except Exception:
-                break
-        if cands and time.time() < deadline:
-            improve(min(cands, key=lambda c: c[0])[1], seed=iseed)
-
-
-def _worker_main(wid, prob_info, timelimit, t_start, q):
-    """Portfolio worker process entry point (must be module-level for spawn)."""
-    try:
-        _reset_caches()
-        state = {"best": float("inf")}
-
-        def push(obj, assign, force=False):
-            # Push every new incumbent immediately: improvements are sparse
-            # (tens per run) and a lost final put cost prob_31 1.4M in v10.0.
-            if obj >= state["best"] - 1e-9 and not force:
-                return
-            state["best"] = min(state["best"], obj)
-            try:
-                q.put((obj, assign))
-            except Exception:
-                pass
-
-        _run_strategy(wid, prob_info, timelimit, t_start, push)
-    except Exception:
-        pass
-
-
-def _algorithm_portfolio(prob_info, timelimit, t_start):
-    import multiprocessing as _mp
-    nw = min(4, _mp.cpu_count() or 1)
-    if nw < 2:
-        raise RuntimeError("not enough cores for a portfolio")
-    # Giant forced instances (n>=250, e.g. prob_38/39): ONE dense construction
-    # takes ~180s+, so lottery workers (W2/W3, which need several builds) can
-    # never contribute, while their builds steal CPU/memory bandwidth from the
-    # workers that matter. Run only W0 (v9 replica -- keeps v9's exact result
-    # on a clean core) and W1 (AREA basin with a full-budget improver).
-    _pre_bays = [Bay.from_dict(d, i) for i, d in enumerate(prob_info["bays"])]
-    if len(prob_info["blocks"]) >= 250 and _is_forced(prob_info, _pre_bays):
-        nw = 2
-    reserve = min(max(4.0, timelimit * 0.08), 12.0)
-    search_deadline = t_start + timelimit * 0.95 - reserve
-    ctx = _mp.get_context()
-    q = ctx.Queue()
-    procs = []
-    for wid in range(nw):
-        p = ctx.Process(target=_worker_main,
-                        args=(wid, prob_info, timelimit, t_start, q),
-                        daemon=True)
-        p.start()
-        procs.append(p)
-
-    bays = [Bay.from_dict(d, i) for i, d in enumerate(prob_info["bays"])]
-    blocks_data = prob_info["blocks"]
-    w = prob_info.get("weights", {})
-    w1, w2, w3 = w.get("w1", 1.0), w.get("w2", 1.0), w.get("w3", 1.0)
-    bay_u = _bay_u(bays)
-
-    cands = []
-    # Insurance: while workers spin up, the otherwise-idle parent builds one
-    # cheap non-dense EDD construction. If memory pressure ever stalls all
-    # workers (seen on prob_38: 4 dense builds thrashed 16GB and the queue came
-    # back empty), the parent still holds a sane solution instead of the
-    # catastrophic empty-bay fallback.
-    try:
-        _reset_caches()
-        quick = _construct(prob_info, _edd_order(blocks_data), bays, bay_u,
-                           w1, w2, w3, t_start, t_start,  # deadline past->sparse
-                           forced=_is_forced(prob_info, bays))
-        cands.append((_objective(quick, blocks_data, bays, bay_u,
-                                 w1, w2, w3)[0], quick))
-        _reset_caches()  # parent doesn't search further; free the memory
-    except Exception:
-        pass
-
-    while time.time() < search_deadline:
-        try:
-            cands.append(q.get(timeout=0.25))
-        except Exception:
-            if all(not p.is_alive() for p in procs):
-                break
-    # Grace drain: workers check their deadline once per improver round, and a
-    # round can take seconds on n=250 -- wait briefly for the final puts.
-    grace = t_start + timelimit * 0.95 - reserve * 0.55
-    while time.time() < grace and any(p.is_alive() for p in procs):
-        try:
-            cands.append(q.get(timeout=0.25))
-        except Exception:
-            pass
-    while True:  # final drain (before terminate: a killed mid-put corrupts pipes)
-        try:
-            cands.append(q.get(timeout=0.05))
-        except Exception:
-            break
-    for p in procs:
-        try:
-            if p.is_alive():
-                p.terminate()
-        except Exception:
-            pass
-
-    fallback = _empty_bay_solution(prob_info, bays)
-    cands.append((_objective(fallback, blocks_data, bays, bay_u, w1, w2, w3)[0],
-                  fallback))
-    cands.sort(key=lambda c: c[0])
-    hard_stop = t_start + timelimit - 1.0
-    for _, assign in cands:
-        if time.time() > hard_stop:
-            break
-        sol = {"operations": _build_operations(assign)}
-        try:
-            res = check_feasibility(prob_info, sol)
-        except Exception:
-            continue
-        if res["feasible"]:
-            return sol
-    # Last resort: empty-bay (structurally feasible).
-    return {"operations": _build_operations(fallback)}
-
-
-# -----------------------------------------------------------------------------
-# Required entry point
-# -----------------------------------------------------------------------------
-
-def algorithm(prob_info, timelimit=60):
-    t_start = time.time()
-    try:
-        return _algorithm_portfolio(prob_info, timelimit, t_start)
-    except Exception:
-        # Multiprocessing unavailable/broken -> v9 single-thread pipeline with
-        # whatever budget remains.
-        return _algorithm_single(prob_info, timelimit, t_start)

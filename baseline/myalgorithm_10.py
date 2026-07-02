@@ -1,4 +1,4 @@
-# myalgorithm.py  --  SUBMISSION ENTRY POINT (self-contained). v10 = v9 + 4-CORE PARALLEL PORTFOLIO
+# myalgorithm_10.py  --  v10 = v9 + 4-CORE PARALLEL PORTFOLIO
 #   (W0 exact-v9-replica anchor / W1 AREA+full improver / W2 basin lottery /
 #    W3 congestion-aware construction; parent = min over workers, verified).
 # =============================================================================
