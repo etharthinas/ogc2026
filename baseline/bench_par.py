@@ -73,8 +73,8 @@ def main():
         path = os.path.join(TRAIN, f"prob_{k}.json")
         with open(path) as f:
             prob = json.load(f)
-        while free_ram_gb() < 6.0:   # RAM gate
-            time.sleep(5)
+        while free_ram_gb() < 2.0:   # RAM gate (was 6.0; desktop load now leaves
+            time.sleep(5)            # ~3GB free -- rely on compression/paging)
         t0 = time.time()
         try:
             sol = mod.algorithm(prob, timelimit)

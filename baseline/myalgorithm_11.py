@@ -1492,16 +1492,18 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
             # measured best on prob_39 (28.97M vs 29.75M plain EDD); larger
             # gammas over-spread. Jitter around it, improve the best.
             rng = random.Random(1313)
-            G = 0.5
             cands = []
             cap = t_start + 0.55 * window
-            for order_fn in (lambda: _edd_order(blocks_data),
-                             lambda: _area_order(blocks_data),
-                             lambda: _edd_order(blocks_data, jitter=rng),
-                             lambda: _area_order(blocks_data, jitter=rng),
-                             lambda: _edd_order(blocks_data, jitter=rng)):
+            # v11: rotate gamma over EDD+AREA (v10.0's varied plans found
+            # basins the fixed gamma lost, e.g. prob_28 7.92M), then jitter.
+            for order_fn, g in ((lambda: _edd_order(blocks_data), 0.5),
+                                (lambda: _area_order(blocks_data), 0.5),
+                                (lambda: _edd_order(blocks_data), 2.0),
+                                (lambda: _edd_order(blocks_data, jitter=rng), 0.5),
+                                (lambda: _area_order(blocks_data, jitter=rng), 0.5),
+                                (lambda: _edd_order(blocks_data, jitter=rng), 2.0)):
                 try:
-                    cands.append(build(order_fn(), True, G))
+                    cands.append(build(order_fn(), True, g))
                 except Exception:
                     pass
                 if time.time() >= cap:
