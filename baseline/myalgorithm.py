@@ -1,12 +1,55 @@
-# myalgorithm.py  --  SUBMISSION ENTRY POINT (self-contained). v10 = v9 + 4-CORE PARALLEL PORTFOLIO
-#   (W0 exact-v9-replica anchor / W1 AREA+full improver / W2 basin lottery /
-#    W3 congestion-aware construction; parent = min over workers, verified).
+# myalgorithm_12.py  --  v12 = v11 + RASTER GEOMETRY ENGINE (numpy conservative
+#                        occupancy scan) + TIME-ORDERED DISPATCHER construction
+#                        + CP-SAT retime audit fixes.
 # =============================================================================
-# Imports ONLY the standard library (math, time, random, multiprocessing) and
-# `utils` (contest-provided, available via shapely in ogc2026_env.yml). It does
-# NOT import any `myalgorithm_N` helper module, so the grader cannot fail with a
-# missing package error when only myalgorithm.py + utils.py ship.
-# To submit a newer version, copy that myalgorithm_N.py over this file.
+# v12 (see heuristic_12.md). Three additions over v11:
+#  1. RASTER ENGINE (`_Raster`). Per (block, orient, layer) a conservative
+#     boolean unit-grid mask (a cell is set iff the layer polygon *touches* its
+#     closed unit square -> mask-disjoint from the occupancy union implies the
+#     polygons share no cell, hence no positive-area overlap: provably feasible
+#     for BOTH the same-layer collision rule AND the crane j>=k prism rule,
+#     since entry and exit share identical geometry). Per-bay per-layer int
+#     occupancy grids are maintained incrementally; a numpy sliding-window scan
+#     returns EVERY entry-clear integer position at once (vs v11's handful of
+#     AABB contact points) -- the direct fix for the 55% density ceiling. It is
+#     conservative (only ever rejects edge-touching placements), so any position
+#     it returns is truly feasible; the chosen candidate is still gated by the
+#     exact cached `_can_place` (which also enforces reverse exit-blocking) and
+#     the whole solution is officially verified by the parent.
+#  2. TIME-ORDERED DISPATCHER (`_dispatch_construct`). Event-driven admission
+#     (events = releases + scheduled exits): at each event admit queued blocks
+#     in ATC (apparent-tardiness-cost) priority using the raster full scan,
+#     never leaving a fitting block queued (kills prob_27's idle-with-fit steps
+#     and drains release bursts as fast as geometry allows). Bay choice spills
+#     to non-preferred bays when the preferred bay is full (w1 >> w3). Prompt
+#     exits at entry+proc (always crane-feasible by the admission invariant).
+#     Wired as W2 (default kappa) and W3 (kappa/weight/jitter lottery).
+#  3. CP-SAT RETIME FIXES. Pair-count cap per bay, a deadline flag inside the
+#     O(m^2) pair-build loop (abort => skip solve, never solve a partial model),
+#     solver budget recomputed AFTER the build (no >=1s floor), and the pass
+#     gated on improver stall with a hard latest-start.
+# =============================================================================
+# Imports the standard library (math, time, random, multiprocessing), `utils`
+# (contest-provided), and OPTIONALLY ortools (in ogc2026_env.yml; every use is
+# wrapped so its absence just disables the CP-SAT pass). No `myalgorithm_N`
+# helper imports. To submit a newer version, copy this over myalgorithm.py.
+# =============================================================================
+# v11 (see heuristic_11.md). Two additions over v10:
+#  1. ISLAND MODEL. v10 workers were isolated: nobody polished another worker's
+#     winner (prob_38's W1 win got zero help). The parent now broadcasts the
+#     global best back to workers via per-worker inbox queues; W1+ improvers
+#     adopt an inbox solution when it beats their incumbent. W0 (v9 replica)
+#     takes no inbox: it must stay byte-exact v9 as the no-regression anchor.
+#  2. CP-SAT TIME-REPAIR. With bay/x/y/orient FIXED, re-optimizing all entry
+#     times is a clean subproblem: w2/w3 don't depend on timing, so minimize
+#     w1*sum(tardiness) subject to pairwise collision (disjoint intervals) and
+#     crane entry/exit blocking (entry_i outside j's presence when j blocks i)
+#     -- all relations precomputed with the exact cached geometry primitives.
+#     Solved per bay (bays are independent). Workers run it once their improver
+#     stalls; the result is pushed like any candidate (parent still verifies
+#     officially, so an encoding subtlety can cost a candidate, never
+#     correctness). Targets the schedule-limited instances (prob_31/35/30/23/
+#     28/21: fluid-LB ~ 0 yet ~5-18M objectives).
 # =============================================================================
 # v10 (see heuristic_10.md). Two structural observations:
 #  1. The eval server allows 4 CPU cores; v9 used ONE. All of v9's compromises
@@ -107,10 +150,19 @@ import math
 import time
 import random
 
+try:
+    import numpy as _np
+    from numpy.lib.stride_tricks import sliding_window_view as _swv
+    _HAVE_NUMPY = True
+except Exception:  # pragma: no cover
+    _np = None
+    _swv = None
+    _HAVE_NUMPY = False
+
 from utils import (
     Bay, Block,
     check_entry, check_exit, check_collisions, check_feasibility,
-    _resolve_layers, _bounding_box, _bb_overlap,
+    _resolve_layers, _bounding_box, _bb_overlap, _poly_from_verts,
 )
 
 # -----------------------------------------------------------------------------
@@ -814,7 +866,7 @@ def _destroy_window(cur, blocks_data, rng):
 
 
 def _improve(prob_info, assignments, bays, bay_u, w1, w2, w3, deadline, forced,
-             seed=4242, sa=False, on_best=None):
+             seed=4242, sa=False, on_best=None, inbox=None):
     """Basin-hopping destroy/repair. Tracks `best` separately from the working
     `cur`; returns `best` -> monotone in the RESULT. Diversifies destroy mode and
     repair ordering, and applies an escape "kick" (a larger destroy accepted even
@@ -858,6 +910,22 @@ def _improve(prob_info, assignments, bays, bay_u, w1, w2, w3, deadline, forced,
     # Small destroy sets + capped repair search => many more rounds/sec, which is
     # what makes the improver bite under real (and contended) compute budgets.
     while time.time() < deadline:
+        # v11 island model: adopt a better global incumbent from the parent.
+        # (W0/v9-replica never gets an inbox, so the anchor stays byte-exact.)
+        if inbox is not None:
+            try:
+                while True:
+                    o_in, a_in = inbox.get_nowait()
+                    if o_in < best_obj - 1e-9:
+                        best_obj = o_in
+                        best_assign = {k: dict(v) for k, v in a_in.items()}
+                        best_tardy = _tardy_count(best_assign)
+                        cur = {k: dict(v) for k, v in a_in.items()}
+                        cur_obj = o_in
+                        no_improve = 0
+                        since_best = 0
+            except Exception:
+                pass
         # Early stop: nothing tardy left and the search has stalled -> the obj2/
         # obj3 part is exhausted; stop instead of burning the rest of the budget.
         if best_tardy == 0 and since_best > 40:
@@ -1251,12 +1319,484 @@ def _algorithm_single(prob_info, timelimit=60, t_start=None):
     return {"operations": _build_operations(fallback)}
 
 
+# =============================================================================
+# v12 RASTER GEOMETRY ENGINE (numpy, conservative)
+# =============================================================================
+
+class _Raster:
+    """Per-instance conservative raster occupancy engine (numpy only).
+
+    For every (block_id, orient_idx) it lazily builds a stack of per-layer
+    boolean masks on the unit grid: mask[l][i, j] is set iff layer l's polygon
+    *touches* the closed unit square of local cell (cx0+j, cy0+i). Because the
+    mask is a superset of the polygon's footprint, two blocks whose masks share
+    no cell cannot have any positive-area polygon overlap -- so a mask that is
+    disjoint from the occupancy union is provably collision-free AND crane-clear
+    (entry and exit obey the same j>=k prism rule; disjointness at every needed
+    layer proves both). It is therefore SOUND as a pre-filter: it may reject a
+    feasible edge-touching placement (conservative) but never accepts an
+    infeasible one. Positions it returns are still gated by the exact cached
+    `_can_place` (for reverse exit-blocking against present blocks) before use.
+
+    Per-bay per-layer occupancy grids (int16, HxW) are updated incrementally on
+    add()/remove(); `scan()` returns a boolean (R,C) grid of all entry-clear
+    anchor windows against the *current* occupancy (crane clearance = for each
+    moving layer k, disjoint from the union of present layers >= k)."""
+
+    def __init__(self, prob_info, bays):
+        self.blocks_data = prob_info["blocks"]
+        self.bays = bays
+        self.W = [int(b.width) for b in bays]
+        self.H = [int(b.height) for b in bays]
+        self._mask = {}                       # (bi, oi) -> (mask, cx0, cy0)
+        self.occ = [dict() for _ in bays]     # bay -> {layer: int16 grid (H,W)}
+        self.ver = [0 for _ in bays]          # occupancy version per bay
+        self._uni = [None for _ in bays]      # bay -> (ver, [union_ge grids])
+
+    # -- mask construction -----------------------------------------------------
+    def mask(self, bi, oi):
+        key = (bi, oi)
+        m = self._mask.get(key)
+        if m is not None:
+            return m
+        import shapely
+        layers = _resolve_layers(self.blocks_data[bi]["shape"][oi]["layers"])
+        allv = [v for L in layers for v in L]
+        if not allv:
+            m = (_np.zeros((1, 1, 1), dtype=_np.uint8), 0, 0)
+            self._mask[key] = m
+            return m
+        xs = [v[0] for v in allv]; ys = [v[1] for v in allv]
+        cx0 = int(math.floor(min(xs))); cx1 = int(math.ceil(max(xs))) - 1
+        cy0 = int(math.floor(min(ys))); cy1 = int(math.ceil(max(ys))) - 1
+        if cx1 < cx0: cx1 = cx0
+        if cy1 < cy0: cy1 = cy0
+        MW = cx1 - cx0 + 1; MH = cy1 - cy0 + 1
+        nl = len(layers)
+        mask = _np.zeros((nl, MH, MW), dtype=_np.uint8)
+        cxs = _np.arange(cx0, cx1 + 1)
+        cys = _np.arange(cy0, cy1 + 1)
+        CX, CY = _np.meshgrid(cxs, cys)       # (MH, MW)
+        boxes = shapely.box(CX, CY, CX + 1, CY + 1)
+        for l, L in enumerate(layers):
+            p = _poly_from_verts(L)
+            if p is None:
+                continue
+            # conservative: a cell is occupied if its unit box touches the poly
+            mask[l] = shapely.intersects(boxes, p).astype(_np.uint8)
+        m = (mask, cx0, cy0)
+        self._mask[key] = m
+        return m
+
+    # -- occupancy update (int counts so remove() is exact) --------------------
+    def _apply(self, bay, bi, oi, x, y, sign):
+        mask, cx0, cy0 = self.mask(bi, oi)
+        nl, MH, MW = mask.shape
+        r = int(y) + cy0; c = int(x) + cx0
+        H, W = self.H[bay], self.W[bay]
+        r0 = max(0, r); c0 = max(0, c)
+        r1 = min(H, r + MH); c1 = min(W, c + MW)
+        if r1 <= r0 or c1 <= c0:
+            self.ver[bay] += 1
+            return
+        occ = self.occ[bay]
+        for l in range(nl):
+            g = occ.get(l)
+            if g is None:
+                if sign < 0:
+                    continue
+                g = _np.zeros((H, W), dtype=_np.int16)
+                occ[l] = g
+            g[r0:r1, c0:c1] += sign * mask[l, r0 - r:r1 - r,
+                                           c0 - c:c1 - c].astype(_np.int16)
+        self.ver[bay] += 1
+
+    def reset(self):
+        """Clear all occupancy (keep the mask cache) for a fresh construction."""
+        for j in range(len(self.bays)):
+            self.occ[j] = dict()
+            self.ver[j] += 1
+            self._uni[j] = None
+
+    def add(self, bay, bi, oi, x, y):
+        self._apply(bay, bi, oi, x, y, 1)
+
+    def remove(self, bay, bi, oi, x, y):
+        self._apply(bay, bi, oi, x, y, -1)
+
+    def footprint(self, bay):
+        """Bool (H,W): any layer occupied (for compactness / util scoring)."""
+        occ = self.occ[bay]
+        H, W = self.H[bay], self.W[bay]
+        fp = _np.zeros((H, W), dtype=bool)
+        for g in occ.values():
+            fp |= (g > 0)
+        return fp
+
+    def _unions(self, bay):
+        cache = self._uni[bay]
+        if cache is not None and cache[0] == self.ver[bay]:
+            return cache[1]
+        occ = self.occ[bay]
+        H, W = self.H[bay], self.W[bay]
+        if not occ:
+            self._uni[bay] = (self.ver[bay], [])
+            return []
+        maxL = max(occ.keys())
+        union_ge = [None] * (maxL + 1)
+        cum = _np.zeros((H, W), dtype=bool)
+        for l in range(maxL, -1, -1):
+            g = occ.get(l)
+            if g is not None:
+                cum = cum | (g > 0)      # new array each time -> distinct refs
+            union_ge[l] = cum
+        self._uni[bay] = (self.ver[bay], union_ge)
+        return union_ge
+
+    def scan(self, bay, bi, oi):
+        """Boolean (R,C) grid of entry-clear anchor windows against the current
+        occupancy, or None if the block cannot fit the bay. Map window (r,c) to
+        an assignment via x = c - cx0, y = r - cy0."""
+        mask, cx0, cy0 = self.mask(bi, oi)
+        nl, MH, MW = mask.shape
+        H, W = self.H[bay], self.W[bay]
+        if MH > H or MW > W:
+            return None, cx0, cy0
+        R = H - MH + 1; C = W - MW + 1
+        unions = self._unions(bay)
+        maxL = len(unions) - 1
+        total = _np.zeros((R, C), dtype=_np.int32)
+        for k in range(nl):
+            if k > maxL:
+                break                     # no present layer >= k -> clear
+            Vk = unions[k]
+            if Vk is None or not Vk.any():
+                continue
+            mk = mask[k]
+            if not mk.any():
+                continue
+            win = _swv(Vk.astype(_np.int32), (MH, MW))     # (R,C,MH,MW)
+            total += _np.einsum('rcij,ij->rc', win, mk.astype(_np.int32))
+        return (total == 0), cx0, cy0
+
+
+# =============================================================================
+# v12 TIME-ORDERED DISPATCHER CONSTRUCTION ("the pump")
+# =============================================================================
+
+def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
+                        kappa=1.0, gamma=0.5, rng=None, cand_cap=12):
+    """Event-driven admission construction using the raster full-position scan.
+
+    Walk event times (releases + scheduled exits); at each event admit queued
+    (released, unplaced) blocks in ATC priority order, placing each in the best
+    bay that has an entry-clear raster window whose candidate also passes the
+    exact `_can_place` gate. Prompt exit at entry+proc. Any block never admitted
+    (deadline / spatially impossible with the current set) is force-placed at
+    the end so the output is always a complete assignment dict, identical in
+    format to `_construct`."""
+    import heapq
+    blocks_data = prob_info["blocks"]
+    n = len(blocks_data)
+    n_bays = len(bays)
+    procs = [int(b["processing_time"]) for b in blocks_data]
+    dues = [int(b["due_date"]) for b in blocks_data]
+    rels = [int(b["release_time"]) for b in blocks_data]
+    pbar = max(1.0, sum(procs) / max(1, n))
+    orients_of = [_unique_orients(b) for b in blocks_data]
+
+    sched = [[] for _ in range(n_bays)]      # bay -> [(blk, entry, exit, bbox)]
+    bay_loads = [0.0] * n_bays
+    assignments = {}
+
+    def atc(bi, t):
+        p = procs[bi]
+        slack = dues[bi] - p - t
+        j = rng.uniform(-0.15, 0.15) if rng is not None else 0.0
+        return (1.0 / p) * math.exp(-max(0.0, slack) / (kappa * pbar)) + j
+
+    def bay_score(bi, bay_id, t):
+        blk = blocks_data[bi]
+        prefs = blk["bay_preferences"]
+        util = 0.0
+        bay = bays[bay_id]
+        area = bay.width * bay.height
+        occ = raster.occ[bay_id]
+        if occ:
+            util = float(raster.footprint(bay_id).sum()) / max(1.0, area)
+        s = w3 * (max(prefs) - prefs[bay_id]) + gamma * w1 * util
+        return s
+
+    def try_place(bi, t):
+        """Try to admit block bi entering at time t. Returns placement tuple or
+        None."""
+        blk = blocks_data[bi]
+        p = procs[bi]
+        exit_t = t + p
+        order = sorted(range(n_bays), key=lambda j: bay_score(bi, j, t))
+        for bay_id in order:
+            bay = bays[bay_id]
+            rel = _rel_sched_bbox(sched[bay_id], t, exit_t)
+            for oi in orients_of[bi]:
+                if not _orient_fits(blk, oi, bay):
+                    continue
+                res = raster.scan(bay_id, bi, oi)
+                feas, cx0, cy0 = res
+                if feas is None or not feas.any():
+                    continue
+                rc = _np.argwhere(feas)               # (K,2) as (r,c)
+                # bottom-left order: low y (=r) first, then low x (=c)
+                keys = (rc[:, 0] * (raster.W[bay_id] + 1) + rc[:, 1]).astype(_np.float64)
+                if rng is not None and len(rc) > 1:
+                    # lottery: mild jitter breaks the strict BL tie-order so the
+                    # multi-start samples nearby packings.
+                    keys = keys + rng.uniform(0.0, 2.0) * _np.array(
+                        [rng.random() for _ in range(len(rc))])
+                idx = _np.argsort(keys)
+                tried = 0
+                for ii in idx:
+                    r, c = int(rc[ii, 0]), int(rc[ii, 1])
+                    x = c - cx0; y = r - cy0
+                    nb = _mkblock(bi, blk, x, y, oi)
+                    if _can_place(bay, rel, nb, t, exit_t):
+                        return (bay_id, x, y, oi, t, exit_t)
+                    tried += 1
+                    if tried >= cand_cap:
+                        break
+        return None
+
+    def commit(bi, place):
+        bay_id, x, y, oi, entry, exit_t = place
+        nb = _mkblock(bi, blocks_data[bi], x, y, oi)
+        sched[bay_id].append((nb, entry, exit_t, nb.bounding_rect()))
+        bay_loads[bay_id] += blocks_data[bi]["workload"]
+        assignments[bi] = {
+            "block_id": bi, "bay_id": bay_id, "x": int(x), "y": int(y),
+            "orient_idx": oi, "entry_time": int(entry), "exit_time": int(exit_t),
+        }
+        raster.add(bay_id, bi, oi, x, y)
+
+    # event structure ---------------------------------------------------------
+    rel_sorted = sorted(range(n), key=lambda i: rels[i])
+    rp = 0
+    exits_at = {}                              # time -> [(bay, bi, oi, x, y)]
+    heap = sorted(set(rels))
+    heapq.heapify(heap)
+    queue = set()
+    placed_cnt = 0
+    last_t = None
+
+    while heap:
+        t = heapq.heappop(heap)
+        if t == last_t:
+            continue
+        last_t = t
+        # 1. process exits at t (free occupancy)
+        ev = exits_at.pop(t, None)
+        if ev:
+            for (bay_id, bi, oi, x, y) in ev:
+                raster.remove(bay_id, bi, oi, x, y)
+        # 2. admit newly released blocks
+        while rp < n and rels[rel_sorted[rp]] <= t:
+            queue.add(rel_sorted[rp]); rp += 1
+        if not queue:
+            continue
+        if time.time() > deadline:
+            break
+        # 3. single admission pass in ATC priority order
+        ordered = sorted(queue, key=lambda bi: -atc(bi, t))
+        for bi in ordered:
+            if time.time() > deadline:
+                break
+            place = try_place(bi, t)
+            if place is not None:
+                commit(bi, place)
+                queue.discard(bi)
+                placed_cnt += 1
+                et = place[5]
+                exits_at.setdefault(et, []).append(
+                    (place[0], bi, place[3], place[1], place[2]))
+                if et not in heap:            # ensure the exit event is visited
+                    heapq.heappush(heap, et)
+        # if the queue still holds blocks and no future event will free space,
+        # inject a probe event so they get force-placed below.
+        if queue and not heap:
+            break
+
+    # 4. force-place every remaining block (queued + not-yet-released) so the
+    #    result is always complete; feed the exact same fallback as _force_place.
+    remaining = [bi for bi in range(n) if bi not in assignments]
+    remaining.sort(key=lambda bi: (dues[bi], -_min_area(blocks_data[bi])))
+    for bi in remaining:
+        blk = blocks_data[bi]
+        # try a raster admission at the block's release (cheap best-effort),
+        # else fall back to the guaranteed empty-bay force placement.
+        t = rels[bi]
+        place = try_place(bi, t)
+        if place is None:
+            place = _force_place(bi, blk, bays, sched)
+        commit(bi, place)
+
+    return assignments
+
+
+def _rel_sched_bbox(sched_bay, entry, exit_t):
+    """(blk, a, e) triples for blocks in the bay whose time interval can matter
+    for a placement over [entry, exit_t) -- i.e. present at entry, present at
+    exit, or time-overlapping. Kept broad (time only) so `_can_place` sees every
+    block it must check; it does its own bbox pruning via the caches."""
+    out = []
+    for it in sched_bay:
+        a, e = it[1], it[2]
+        if a <= exit_t and entry <= e:
+            out.append((it[0], a, e))
+    return out
+
+
 # -----------------------------------------------------------------------------
-# v10 parallel portfolio
+# v11 CP-SAT exact time-repair (fixed geometry)  [v12: audit fixes]
 # -----------------------------------------------------------------------------
 
-def _run_strategy(wid, prob_info, timelimit, t_start, push):
-    """One portfolio member. Streams (internal_obj, assignments) via push()."""
+def _cpsat_retime(prob_info, assign, bays, blocks_data, budget_s, hard_deadline):
+    """Re-optimize ALL entry times of `assign` with bay/x/y/orient fixed,
+    minimizing total tardiness (the only timing-dependent objective term).
+    Bays are independent -> one CP-SAT model per bay. Pairwise relations come
+    from the exact cached geometry primitives; crane tie rules mirror
+    _present_at_entry/_present_at_exit. Returns a new assignments dict or None
+    (ortools missing, no time, or no improvement)."""
+    try:
+        from ortools.sat.python import cp_model
+    except Exception:
+        return None
+    t_end = min(time.time() + budget_s, hard_deadline - 1.0)
+    if time.time() >= t_end:
+        return None
+    n_bays = len(bays)
+    by_bay = [[] for _ in range(n_bays)]
+    for bi, a in assign.items():
+        by_bay[a["bay_id"]].append(bi)
+    # Most-tardy bays first so the budget goes where the money is.
+    def bay_tard(ids):
+        return sum(max(0, assign[bi]["exit_time"] - blocks_data[bi]["due_date"])
+                   for bi in ids)
+    order = sorted(range(n_bays), key=lambda j: -bay_tard(by_bay[j]))
+    new_assign = {bi: dict(a) for bi, a in assign.items()}
+    improved = False
+    for bj in order:
+        ids = by_bay[bj]
+        if len(ids) < 2 or bay_tard(ids) <= 0:
+            continue
+        # v12 fix: pair-count cap. The pairwise build is O(m^2) Shapely/cache
+        # queries; a bay with hundreds of blocks can blow the whole window on
+        # model construction alone. Skip such bays (the improver already handles
+        # them; CP-SAT's win is on the small schedule-limited bays).
+        if len(ids) * (len(ids) - 1) // 2 > 4000:
+            continue
+        remaining = t_end - time.time()
+        if remaining < 1.5:
+            break
+        bay = bays[bj]
+        blks = {bi: _mkblock(bi, blocks_data[bi], assign[bi]["x"],
+                             assign[bi]["y"], assign[bi]["orient_idx"])
+                for bi in ids}
+        m = cp_model.CpModel()
+        H = int(2 * max(max(a["exit_time"] for a in assign.values()),
+                        max(blocks_data[bi]["due_date"] for bi in ids)) + 10)
+        E, P = {}, {}
+        terms = []
+        for bi in ids:
+            blk = blocks_data[bi]
+            P[bi] = int(blk["processing_time"])
+            E[bi] = m.NewIntVar(int(blk["release_time"]), H, f"e{bi}")
+            m.AddHint(E[bi], int(assign[bi]["entry_time"]))
+            T = m.NewIntVar(0, H, f"t{bi}")
+            m.Add(T >= E[bi] + P[bi] - int(blk["due_date"]))
+            terms.append(T)
+
+        def outside(t_i, off_i, bi_id, bj2, tie_bad):
+            """Moment E[bi_id]+off_i must lie outside (E[bj2], E[bj2]+P[bj2]);
+            tie_bad='left' also forbids == E[bj2]; 'right' forbids == exit."""
+            b1, b2 = m.NewBoolVar(""), m.NewBoolVar("")
+            if tie_bad == "left":
+                m.Add(E[bi_id] + off_i <= E[bj2] - 1).OnlyEnforceIf(b1)
+            else:
+                m.Add(E[bi_id] + off_i <= E[bj2]).OnlyEnforceIf(b1)
+            if tie_bad == "right":
+                m.Add(E[bi_id] + off_i >= E[bj2] + P[bj2] + 1).OnlyEnforceIf(b2)
+            else:
+                m.Add(E[bi_id] + off_i >= E[bj2] + P[bj2]).OnlyEnforceIf(b2)
+            m.AddBoolOr([b1, b2])
+
+        abort = False
+        for u in range(len(ids)):
+            # v12 fix: deadline flag INSIDE the O(m^2) build. A partially-built
+            # model omits collision/crane constraints and would solve to a
+            # garbage (infeasible-in-reality) schedule, so on timeout we abort
+            # the bay WITHOUT solving rather than solve an incomplete model.
+            if (u & 15) == 0 and time.time() >= t_end:
+                abort = True
+                break
+            for v in range(u + 1, len(ids)):
+                i, j = ids[u], ids[v]
+                A, B = blks[i], blks[j]
+                if not _bb_overlap(A.bounding_rect(), B.bounding_rect()):
+                    continue
+                if _collide(bay, A, B):
+                    # disjoint presence intervals (touching allowed; ties are
+                    # then boundary moments, which the replay rules permit)
+                    b1, b2 = m.NewBoolVar(""), m.NewBoolVar("")
+                    m.Add(E[i] + P[i] <= E[j]).OnlyEnforceIf(b1)
+                    m.Add(E[j] + P[j] <= E[i]).OnlyEnforceIf(b2)
+                    m.AddBoolOr([b1, b2])
+                    continue
+                # crane rules (mirror _present_at_entry/_present_at_exit ties):
+                # j present at i's ENTRY t: E_j < t < exit_j, or t == E_j and
+                # j.id < i.id. j present at i's EXIT t: E_j < t < exit_j, or
+                # t == exit_j and j.id > i.id.
+                if _entry_blocked(bay, B, A):   # j obstructs i's entry moment
+                    outside(E[i], 0, i, j, "left" if j < i else "none")
+                if _exit_blocked(bay, B, A):    # j obstructs i's exit moment
+                    outside(E[i], P[i], i, j, "right" if j > i else "none")
+                if _entry_blocked(bay, A, B):
+                    outside(E[j], 0, j, i, "left" if i < j else "none")
+                if _exit_blocked(bay, A, B):
+                    outside(E[j], P[j], j, i, "right" if i > j else "none")
+        if abort:
+            break
+        m.Minimize(sum(terms))
+        # v12 fix: recompute the solver budget AFTER the (possibly slow) build,
+        # and drop the >=1s floor -- the old code reserved the PRE-build
+        # `remaining` and floored it at 1s, so a long build let the solve run
+        # past t_end and starved the post-CP improve.
+        rem2 = t_end - time.time()
+        if rem2 < 0.5:
+            break
+        solver = cp_model.CpSolver()
+        solver.parameters.max_time_in_seconds = rem2
+        solver.parameters.num_search_workers = 1  # we're already 1 core/worker
+        try:
+            status = solver.Solve(m)
+        except Exception:
+            continue
+        if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            before = bay_tard(ids)
+            after = sum(int(solver.Value(t)) for t in terms)
+            if after < before:
+                for bi in ids:
+                    e = int(solver.Value(E[bi]))
+                    new_assign[bi]["entry_time"] = e
+                    new_assign[bi]["exit_time"] = e + P[bi]
+                improved = True
+    return new_assign if improved else None
+
+
+# -----------------------------------------------------------------------------
+# v10 parallel portfolio (v11: + island inboxes + CP-SAT pass)
+# -----------------------------------------------------------------------------
+
+def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
+    """One portfolio member. Streams (internal_obj, assignments) via push();
+    receives global-best broadcasts via inbox (None for the W0 anchor)."""
     reserve = min(max(4.0, timelimit * 0.08), 12.0)
     deadline = t_start + timelimit * 0.95 - reserve - 2.5  # margin for final put
     bays = [Bay.from_dict(d, i) for i, d in enumerate(prob_info["bays"])]
@@ -1277,11 +1817,46 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push):
         push(o, a)
         return o, a
 
-    def improve(assign, seed, sa=False):
+    def improve(assign, seed, until=None):
+        dl = deadline if until is None else min(until, deadline)
         r, o = _improve(prob_info, assign, bays, bay_u, w1, w2, w3,
-                        deadline, forced, seed=seed, sa=sa, on_best=push)
+                        dl, forced, seed=seed, on_best=push, inbox=inbox)
         push(o, r, force=True)
         return o, r
+
+    # v12: raster engine (shared masks, occupancy reset per dispatch). Only the
+    # dispatcher workers (W2/W3) build it; raster=None disables the dispatcher
+    # (numpy missing) and those workers fall through to the v11 recipe below.
+    raster = _Raster(prob_info, bays) if (_HAVE_NUMPY and wid in (2, 3)) else None
+
+    def dispatch(kappa, gamma, drng=None):
+        raster.reset()
+        a = _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline,
+                                raster, kappa=kappa, gamma=gamma, rng=drng)
+        o = iobj(a)
+        push(o, a)
+        return o, a
+
+    def polish(assign, seed):
+        """improve -> CP-SAT exact time-repair -> improve the winner. The CP
+        pass fires at a hard-latest 62% of the window (or immediately when the
+        improver converges early == a stall gate) so the improver both feeds it
+        a good geometry and gets time to exploit the re-timed schedule after."""
+        cp_at = t_start + 0.62 * window
+        o1, r1 = improve(assign, seed, until=cp_at)
+        try:
+            rc = _cpsat_retime(prob_info, r1, bays, blocks_data,
+                               min(30.0, 0.12 * window), deadline)
+        except Exception:
+            rc = None
+        base, ob = r1, o1
+        if rc is not None:
+            oc = iobj(rc)
+            push(oc, rc, force=True)
+            if oc < ob:
+                base, ob = rc, oc
+        if time.time() < deadline - 2.0:
+            improve(base, seed + 1)
 
     if wid == 0:
         # W0 = EXACT v9 replica (same rng streams, same two-pass improver).
@@ -1293,12 +1868,59 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push):
         _v9_search(prob_info, timelimit - 2.5, t_start, push=push)
         return
 
+    # -- W2 = time-ordered dispatcher (default kappa) -> improver -------------
+    if wid == 2 and raster is not None:
+        a = None
+        try:
+            _, a = dispatch(1.0, 0.5)
+        except Exception:
+            a = None
+        if a is not None:
+            polish(a, seed=2222)
+        else:  # dispatcher failed -> safe v11-style construction + improve
+            try:
+                _, a = build(_area_order(blocks_data) if forced
+                             else _edd_order(blocks_data), forced)
+                improve(a, seed=2222)
+            except Exception:
+                pass
+        return
+
+    # -- W3 = dispatcher lottery (kappa/gamma/jitter) -> improver -> CP-SAT ---
+    if wid == 3 and raster is not None:
+        drng = random.Random(9099)
+        cands = []
+        cap = t_start + 0.5 * window
+        # rotate ATC kappa in {0.5,1,2,4} crossed with bay-spread gamma variants
+        plan = [(0.5, 0.5), (1.0, 0.5), (2.0, 0.5), (4.0, 0.5),
+                (1.0, 2.0), (2.0, 0.0), (0.5, 1.0), (4.0, 0.0)]
+        gi = 0
+        while True:
+            kap, gam = plan[gi % len(plan)]
+            gi += 1
+            try:
+                cands.append(dispatch(kap, gam, drng))
+            except Exception:
+                break
+            if time.time() >= cap or gi > 60:
+                break
+        if cands:
+            polish(min(cands, key=lambda c: c[0])[1], seed=3333)
+        elif time.time() < deadline:  # fallback
+            try:
+                _, a = build(_area_order(blocks_data) if forced
+                             else _edd_order(blocks_data), forced)
+                improve(a, seed=3333)
+            except Exception:
+                pass
+        return
+
     if forced:
         if wid == 1:
             # v9's giant-winner basin with the FULL budget instead of 65% of
             # the post-construction reserve.
             _, a = build(_area_order(blocks_data), True)
-            improve(a, seed=777)
+            polish(a, seed=777)
         elif wid == 2:
             # Basin lottery: jittered EDD/AREA multi-start with a different rng
             # than W0's, improve the best. Samples more of the construction
@@ -1318,29 +1940,31 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push):
                 if time.time() >= cap:
                     break
             if cands:
-                improve(min(cands, key=lambda c: c[0])[1], seed=555)
+                polish(min(cands, key=lambda c: c[0])[1], seed=555)
         else:
             # Congestion-aware constructions (kills Pass-A first-preferred-wins;
             # pays an anticipatory price for stuffing crowded bays). gamma=0.5
             # measured best on prob_39 (28.97M vs 29.75M plain EDD); larger
             # gammas over-spread. Jitter around it, improve the best.
             rng = random.Random(1313)
-            G = 0.5
             cands = []
             cap = t_start + 0.55 * window
-            for order_fn in (lambda: _edd_order(blocks_data),
-                             lambda: _area_order(blocks_data),
-                             lambda: _edd_order(blocks_data, jitter=rng),
-                             lambda: _area_order(blocks_data, jitter=rng),
-                             lambda: _edd_order(blocks_data, jitter=rng)):
+            # v11: rotate gamma over EDD+AREA (v10.0's varied plans found
+            # basins the fixed gamma lost, e.g. prob_28 7.92M), then jitter.
+            for order_fn, g in ((lambda: _edd_order(blocks_data), 0.5),
+                                (lambda: _area_order(blocks_data), 0.5),
+                                (lambda: _edd_order(blocks_data), 2.0),
+                                (lambda: _edd_order(blocks_data, jitter=rng), 0.5),
+                                (lambda: _area_order(blocks_data, jitter=rng), 0.5),
+                                (lambda: _edd_order(blocks_data, jitter=rng), 2.0)):
                 try:
-                    cands.append(build(order_fn(), True, G))
+                    cands.append(build(order_fn(), True, g))
                 except Exception:
                     pass
                 if time.time() >= cap:
                     break
             if cands:
-                improve(min(cands, key=lambda c: c[0])[1], seed=1313)
+                polish(min(cands, key=lambda c: c[0])[1], seed=1313)
     else:
         # Non-forced instances: v9's thorough congestion+EDD+jitter recipe,
         # seed/order-diversified across workers; W3 adds util_gamma.
@@ -1375,10 +1999,10 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push):
             except Exception:
                 break
         if cands and time.time() < deadline:
-            improve(min(cands, key=lambda c: c[0])[1], seed=iseed)
+            polish(min(cands, key=lambda c: c[0])[1], seed=iseed)
 
 
-def _worker_main(wid, prob_info, timelimit, t_start, q):
+def _worker_main(wid, prob_info, timelimit, t_start, q, inbox=None):
     """Portfolio worker process entry point (must be module-level for spawn)."""
     try:
         _reset_caches()
@@ -1395,7 +2019,8 @@ def _worker_main(wid, prob_info, timelimit, t_start, q):
             except Exception:
                 pass
 
-        _run_strategy(wid, prob_info, timelimit, t_start, push)
+        _run_strategy(wid, prob_info, timelimit, t_start, push,
+                      inbox=None if wid == 0 else inbox)
     except Exception:
         pass
 
@@ -1410,17 +2035,25 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
     # never contribute, while their builds steal CPU/memory bandwidth from the
     # workers that matter. Run only W0 (v9 replica -- keeps v9's exact result
     # on a clean core) and W1 (AREA basin with a full-budget improver).
+    # v12: giants keep W0 (v9 replica) + W1 (AREA basin) but now ALSO run W2 =
+    # the raster dispatcher, whose builds are far lighter than the Shapely
+    # constructions that forced n>=250 down to 2 workers in v11 (the raster path
+    # never runs the expensive per-candidate Shapely scans during construction).
+    # W3's multi-start lottery still can't afford several giant builds, so it is
+    # dropped. nw=3 measured for RSS safety on prob_38 (see report).
     _pre_bays = [Bay.from_dict(d, i) for i, d in enumerate(prob_info["bays"])]
     if len(prob_info["blocks"]) >= 250 and _is_forced(prob_info, _pre_bays):
-        nw = 2
+        nw = min(nw, 3)
     reserve = min(max(4.0, timelimit * 0.08), 12.0)
     search_deadline = t_start + timelimit * 0.95 - reserve
     ctx = _mp.get_context()
     q = ctx.Queue()
+    inboxes = [ctx.Queue() for _ in range(nw)]  # v11 island broadcasts
     procs = []
     for wid in range(nw):
         p = ctx.Process(target=_worker_main,
-                        args=(wid, prob_info, timelimit, t_start, q),
+                        args=(wid, prob_info, timelimit, t_start, q,
+                              inboxes[wid]),
                         daemon=True)
         p.start()
         procs.append(p)
@@ -1448,9 +2081,19 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
     except Exception:
         pass
 
+    gbest = float("inf")  # v11: broadcast global best to worker inboxes when
+    #                       it improves enough to matter (>0.2%)
     while time.time() < search_deadline:
         try:
-            cands.append(q.get(timeout=0.25))
+            item = q.get(timeout=0.25)
+            cands.append(item)
+            if item[0] < gbest * 0.998:
+                gbest = item[0]
+                for ib in inboxes:
+                    try:
+                        ib.put(item)
+                    except Exception:
+                        pass
         except Exception:
             if all(not p.is_alive() for p in procs):
                 break
@@ -1474,14 +2117,35 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
         except Exception:
             pass
 
+    import os as _os2
+    _dbg = _os2.environ.get("OGC_DEBUG")
     fallback = _empty_bay_solution(prob_info, bays)
     cands.append((_objective(fallback, blocks_data, bays, bay_u, w1, w2, w3)[0],
                   fallback))
     cands.sort(key=lambda c: c[0])
     hard_stop = t_start + timelimit - 1.0
+    if _dbg:
+        _el = time.time() - t_start
+        _objs = sorted(c[0] for c in cands)[:5]
+        print(f"[parent] ncands={len(cands)} elapsed={_el:.1f} hard_stop_in="
+              f"{hard_stop - time.time():.1f} best5={[f'{o:.3g}' for o in _objs]}",
+              flush=True)
+    _nver = 0
+    # Absolute cutoff just under the contract limit. We ALWAYS verify at least the
+    # single best candidate (check_feasibility is ~0.15s even for n=250): this is
+    # the guard against the empty-bay catastrophe when the end-phase drain has
+    # eaten past hard_stop under load, which otherwise threw away a ready 15M
+    # solution for the 1.9e9 fallback.
+    abs_stop = t_start + timelimit - 0.3
     for _, assign in cands:
-        if time.time() > hard_stop:
+        now = time.time()
+        if now > abs_stop:
             break
+        if _nver >= 1 and now > hard_stop:
+            if _dbg:
+                print(f"[parent] hard_stop hit after {_nver} verifies", flush=True)
+            break
+        _nver += 1
         sol = {"operations": _build_operations(assign)}
         try:
             res = check_feasibility(prob_info, sol)

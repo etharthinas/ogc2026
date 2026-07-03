@@ -100,4 +100,43 @@ inherit wins from the same levers.
   @300s; (4) full-40 bench_row @300s on a QUIET machine.
 - Success gate to proceed to full-40: focus-4 total < 160M (v10: 185.0M).
 
-## Results (filled after testing)
+## Results (results.csv row `algorithm 12 (4w 300s)`)
+**Full-40 @300s serial, quiet machine = 174,587,763, 40/40 feasible — new SOTA,
+−114,512,770 (−39.6%) vs v10's 289,100,533. GOAL (<200M) MET.**
+
+| inst | v10 | v12 | delta |
+|---|---:|---:|---:|
+| prob_38 | 91,317,838 | **49,420,035** | **−41.90M** |
+| prob_27 | 48,919,611 | **31,929,802** | **−16.99M** |
+| prob_39 | 27,053,638 | **15,300,889** | **−11.75M** |
+| prob_35 | 9,308,547 | **2,347,358** | **−6.96M** |
+| prob_33 | 16,731,780 | 11,055,920 | −5.68M |
+| prob_30 | 10,830,851 | 5,927,780 | −4.90M |
+| prob_31 | 17,770,214 | 12,880,039 | −4.89M |
+| prob_28 | 8,834,745 | 4,445,588 | −4.39M |
+| prob_26 | 16,816,061 | 12,689,104 | −4.13M |
+| prob_21 | 4,464,913 | 2,227,144 | −2.24M |
+| prob_23 | 6,613,919 | 4,584,164 | −2.03M |
+| prob_29 | 1,869,891 | 631,617 | −1.24M |
+| prob_37 | 8,863,080 | 6,748,895 | −2.11M |
+| prob_34 | 3,488,961 | 2,527,479 | −0.96M |
+| prob_40 | 3,647,003 | 2,454,184 | −1.19M |
+| prob_24 | 2,034,701 | 1,235,206 | −0.80M |
+| prob_32 | 5,321,212 | 4,578,158 | −0.74M |
+| prob_25 | 739,136 | 353,558 | −0.39M |
+| prob_20 | 544,247 | 209,325 | −0.33M |
+| prob_22 | 1,281,391 | 1,053,879 | −0.23M |
+| prob_36 | 490,447 | 259,010 | −0.23M |
+| prob_1..19 | 2,145,753 | 1,728,629 | −0.42M (all obj1=0; only prob_5 +5.8k / prob_10 +2.8k lottery noise) |
+
+## Analysis
+- Every forced/giant instance moved massively; the dispatcher construction
+  (event-driven ATC admission over the raster full-position scan) is the
+  winning basin nearly everywhere the improver then polishes.
+- The raster engine's empirical soundness held: 0 violations over ~5,200
+  checked cells; official checker passed 40/40 first-verify.
+- prob_38 (49.4M vs fluid LB 24.2M) and prob_27 (31.9M vs LB 17.1M) still
+  carry ~2x LB — remaining headroom is triage quality + burst density.
+- Only regressions: prob_5 +5,829, prob_10 +2,842 (basin-lottery noise).
+- Runtime healthy: many instances converge and stop early (47-115s on small
+  ones); giants use the full window at ~1.15GB/worker RSS (nw=3).
