@@ -54,3 +54,35 @@ Total −1.1 to −2.7M from ~151.3M ⇒ 148.6-150.2M.
   (5) full-40 bench_row @300s.
 
 ## Results (filled after testing)
+
+### Units
+- Reclaim-rule isolation: rule as specced selects {27, 37, 38, 39, 40}, NOT
+  the expected {27,38,39} — prob_37 (n=250 forced, overload 0.782) and
+  prob_40 (n=250 forced, overload 1.222, higher than 38's 1.142) are also
+  giants. results.csv proves W0-v9 non-competitive on them too (v9 vs v14:
+  37 = 9.03M vs 5.81M, 40 = 3.79M vs 2.30M), so the five-instance selection
+  was kept (min-wins-safe on all five). Unit PASS with corrected expectation.
+- Byte-repro v15 vs v16 (deterministic clock): PASS on prob_31
+  (dispatch+improve, forced non-reclaimed) and prob_1 (easy).
+
+### Ladder @300s (two passes: first under mild stale load ~3% of one core,
+### rerun on clean machine — every number byte-identical across both passes)
+- GATE {38,39,27}: 45,806,839 (flat) + 12,361,461 (−13,596) + 29,198,468
+  (flat) = 87,366,768 vs gate < 86.0M → GATE MISSED (net −13.6k).
+- Reclaim extras: 37 = 5,807,047 (flat), 40 = 2,300,281 (flat).
+- Protect: 26 = 9,653,490 (flat), 35 = 1,346,898 (holds v15 band),
+  31 = 11,268,243 (flat); prob_1 @60s = 18,357 byte-exact.
+
+### Analysis
+The anchor reclaim is SAFE (zero regressions anywhere in the ladder) but
+bought almost nothing: the kappa=2/alpha=0.5 full-budget W0 stream + deep
+repack (cap 45, {2,1,3,4}·pbar rotation, giant-specialist sbay/xbay) never
+beat the incumbent v14 winners on the saturated set. Only prob_39 moved, a
+reproducible −13,596. Both passes byte-identical per instance ⇒ outcomes on
+this set are fully deterministic under the current portfolio; the seventh
+lever family (portfolio width / reclaimed compute) is now measured ≈ dead on
+38/27. Projected full-40 if promoted: ~151.28M (v15 −13.6k) — far from the
+~1.3M needed. The remaining headroom (39: 12.36M vs 1.3M fluid LB; 27:
+29.2M vs ~20.7M loadable bound) points at geometry-at-scale mechanisms
+(exact/simultaneous multi-block packing subproblems), not further
+ordering/portfolio levers.
