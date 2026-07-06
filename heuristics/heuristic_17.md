@@ -117,3 +117,12 @@ accepted window, too few accepts inside the portfolio). Remaining honest
 levers: none cheap -- the saturated pair (38/27) has now survived eight
 mechanism families; the next escalation would be exact packing at whole-bay
 scale (minutes-class solves).
+
+## FINAL RESULT (results.csv row `algorithm 17 (4w 300s)`)
+**Full-40 @300s = 150,701,580, 40/40 feasible — new SOTA, −1,004,134 vs
+v14's recorded 151,705,714 (v15/v16 unbenched interims).** Projection hit
+exactly (150.70M). myalgorithm.py promoted to v17. Surprise row wins:
+prob_3 66,730 (−23.5k, first move since v3), prob_13 −8.8k, prob_25 −6.6k,
+prob_8 −1k. Row-hygiene targets for v18: prob_9 +11.2k / prob_14 +10.6k /
+prob_16 +4.1k (v14-era draws displaced), prob_39 +13.6k (spot draw
+12,361,461 not reproduced in full run — pacing). Gap to <150M: 701,580.

@@ -1,4 +1,124 @@
-# myalgorithm_14.py  --  v14 = v13 + JOINT WINDOW REPACK (LNS-XL, geometry lever) +
+# myalgorithm_17.py  --  v17 = v16 + v13 BASIN RESTORATION + EXACT PACKING
+#                        WINDOWS (CP-SAT candidate-menu matheuristic).
+#                        See heuristic_17.md.
+# =============================================================================
+# v17. Two prongs sized to close the final ~1.3M (v16 ~= 151.28M):
+#  1. v13 BASIN RESTORATION (~0.6M pool: 21 +94.7k, 28 +13.6k, 29 +20.6k,
+#     30 +82.1k, 33 +276.5k, 34 +95.4k vs v13's row). v14 repack pacing and
+#     v15 harvest cycles displaced these v13 draws as side effects. Guided by
+#     the m13a attribution probe (which worker/phase produced each v13
+#     winner), dedicated slots reproduce v13's exact polish (improve -> cpsat
+#     -> improve, no repack, original seeds/pacing) ONLY where the winners
+#     lived, leaving the slots that carry current wins (26 -1.71M, 23 -429k,
+#     35 -664k vs v13) byte-untouched. Wiring is recorded next to the polish
+#     changes below.
+#  2. EXACT PACKING WINDOW (`_exact_pack_window`) -- the untried mechanism
+#     family: exact simultaneous multi-block placement. Select a congested
+#     (bay, window) as in repack; destroy a capped set D (~18); enumerate up
+#     to K (~25) raster-feasible candidate placements per block (scoped scan
+#     against the fixed neighbours over a widened window); precompute pairwise
+#     spatial relations from the conservative raster masks (same soundness
+#     contract as v12: masks are supersets, so a mask-clear pair is provably
+#     clear; mask-overlap pairs get the exact v12-audited CP-SAT timing
+#     constraints -- disjoint intervals for colliders, prism outside-moment
+#     constraints with the replay tie rules otherwise); CP-SAT selects exactly
+#     one placement per block + integer entry times minimizing w1*tardiness.
+#     Solution is exact-validated with _can_place before being returned, and
+#     the caller obj-gates -- official verify unchanged. ortools guarded; on
+#     absence the greedy repack path stands. Wired into the reclaimed slots
+#     (W0 stream, W3 giant specialist) and forced non-giant polish after
+#     cycle 1 (targets 39/26/23/33; non-forced pacing untouched).
+# =============================================================================
+# v16 = v15 + ANCHOR RECLAIM on {27,38,39} + REPACK
+#                        DEEPENING + prob_27-CLASS PARITY. See heuristic_16.md.
+# =============================================================================
+# v16. Three additions over v15 (goal: full-40 train < 150M; v15 ~= 151.3M).
+#  Diagnosis (heuristic_16.md): W0's v9-replica anchor is provably
+#  non-competitive on exactly the instances holding 58% of the loss (prob_38/
+#  39/27: candidates ~2x worse than the dispatcher-side winners, zero verify
+#  wins since v12) -- a full core wasted where the money is. Its safety role is
+#  covered by the parent insurance build + empty-bay fallback + official
+#  best-first verify.
+#  1. ANCHOR RECLAIM (`reclaim` rule, instance-computed, no name lookups):
+#     giant gate (forced and n>=250) OR overload ratio > 1.05. On train this
+#     selects exactly {27, 37, 38, 39, 40} (unit-tested; the plan expected
+#     {27,38,39} but 37/40 are also n=250 forced giants, and results.csv
+#     proves W0-v9 non-competitive on them too: v9 vs v14 = 9.03M vs 5.81M on
+#     37, 3.79M vs 2.30M on 40 -- reclaim is min-wins-safe on all five). On
+#     reclaimed instances W0 runs a PRODUCTIVE stream instead: dispatcher
+#     construction with the kappa=2/alpha=0.5 basin at FULL budget (W2 only
+#     ever samples it inside a 0.45w lottery) -> v14-envelope polish (improve
+#     -> improve; CP-SAT retime skipped: forced, measured zero) -> Z3
+#     relocation endgame. W0 stays byte-exact v9 everywhere else.
+#  2. REPACK DEEPENING on the reclaimed set (density-proven lever): destroy
+#     cap 30 -> 45, repack window-scale rotates per fire over {2,1,3,4}*pbar
+#     (gains the 4*pbar entry), and the giant W3 repack specialist alternates
+#     single-bay / cross-bay (z3-relocation) windows again -- obj-gated, so
+#     worst case it contributes nothing.
+#  3. prob_27-CLASS PARITY: non-giant overloaded instances (overload > 1.05,
+#     n < 250: prob_27 on train) get the giant polish treatment (single long
+#     v14-envelope improves instead of harvest cycles -- `giantish` in polish)
+#     plus the reclaimed W0 stream as their second full-budget dispatcher
+#     basin. (W2's forced mini-lottery + interleaved repack already applied.)
+# =============================================================================
+# v15 = v14 + CROSS-BAY Z3 GROUP RELOCATION + BASIN-
+#                        DIVERSITY HARVEST (re-seeded from distinct
+#                        constructions) + BUDGET REFUND (skip CP-SAT on forced
+#                        non-giants). See heuristic_15.md.
+# =============================================================================
+# v15 ROUND 2 (after round-1 measurement: 35 -406k, 38 +53k, rest byte-flat):
+#  r2a. Harvest cycles 2-3 re-seed from the lottery's runner-up CONSTRUCTIONS
+#       (pick_alts): r1 measured that improve-seed variation restarting from a
+#       converged incumbent never leaves its basin (31/33/30/34 byte-flat);
+#       the historical run-to-run spread came from construction draws.
+#  r2b. _repack_xbay rewritten from congestion-LNS (measured +12M..+68M
+#       candidates on prob_31 -- rebuild tardiness drowns Z3 gains) to Z3 GROUP
+#       RELOCATION: quiet-window, off-pref non-tardy blocks only, zero-slot
+#       rebuild (chain-swap capability _z3_relocate lacks).
+#  r2c. Giants (forced n>=250) restored to the EXACT v14 polish envelope and
+#       v14 W3 giant specialist (r1 harvest/xbay measured zero-to-negative:
+#       prob_38 +53k).
+# =============================================================================
+# v15. Three additions over v14 (goal: full-40 train < 150M; v14 ~= 152M).
+#  Diagnosis (heuristic_15.md): v14's joint repack is SINGLE-BAY -- it can
+#  re-interlock a bay but cannot rebalance across bays, recover preference
+#  (Z3 needs bay changes), or relieve one bay by exporting a block. The lottery
+#  noise band (250-400k per-instance spread) is unharvested (one long polish =
+#  one draw per worker). CP-SAT retime is measured-zero on forced instances.
+#  1. CROSS-BAY WINDOW REPACK (`_repack_xbay`, `_repack_window(mode='xbay')`).
+#     Pick a TIME window scored by congestion AND a Z3 term (w3 x recoverable
+#     preference gap of off-pref blocks in the window), destroy every block whose
+#     [entry,exit) intersects it across ALL bays (cap 40; prefer tardy + off-pref
+#     + central), and rebuild the destroyed set with a restricted dispatch where
+#     BAY CHOICE IS FREE (bay economics w1*tard + w2*imbal + w3*pref, k trial
+#     orders as in v14, raster-scoped placement against the fixed neighbours).
+#     Failures fall through the normal all-bay repair + force-place guarantee.
+#     `_improve` alternates single-bay / cross-bay repack modes round-robin.
+#     Obj-gated accept, restore-on-reject -- identical discipline to v14. New
+#     capability: inter-bay rebalancing + Z3 recovery inside one obj-gated move
+#     (targets 31/33/30/34/35; +1 fifth-family shot at 38/27). Only fires when
+#     the incumbent is tardy (same gate as v14's repack), so the zero-tardy
+#     easy tail never sees it.
+#  2. BASIN-DIVERSITY HARVEST. `polish` runs the improver as THREE independent
+#     cycles instead of one long draw: cycle = improve(seed_i, window-bounded) +
+#     its repack rounds, each starting from the best-so-far assignment but a
+#     FRESH rng stream, with the repack window width rotated over {2,1,3}*pbar.
+#     Every cycle-best is pushed to the parent (min wins). Cycle 1 keeps v14's
+#     original seed, sbay-only repack and 2*pbar window (== the v14 improve-1
+#     draw distribution; xbay only enters via cycles 2-3); the total budget is
+#     unchanged (the cycles tile v14's improve envelope) so the harvest is
+#     pure-upside -- it re-uses the same wall time to take three seeded draws
+#     over the measured 250-400k spread instead of one. Non-forced polish keeps
+#     CP-SAT retime between cycles 1 and 2 (prob_21's historical win); its
+#     cycles 2-3 harvest the tardy non-forced band (prob_35/21/24). Zero-tardy
+#     easies are inert (repack gated on tardiness; improver early-stops).
+#  3. BUDGET REFUND + Z3 WINDOWS. (a) Skip `_cpsat_retime` entirely on forced
+#     instances (measured zero twice); the reclaimed slice folds into the harvest
+#     cycles. CP-SAT is kept for non-forced (won prob_21). (b) Repack window
+#     selection gains the Z3 term above so cross-bay repack aims at preference-
+#     dense regions (prob_31's 2.82M Z3). W0 (v9 replica) untouched -> byte-exact.
+# =============================================================================
+# v14 = v13 + JOINT WINDOW REPACK (LNS-XL, geometry lever) +
 #                        MULTI-ORDER ADMISSION BEAM + REPACK-HEAVY WORKERS.
 #                        See heuristic_14.md.
 # =============================================================================
@@ -981,15 +1101,22 @@ def _destroy_window(cur, blocks_data, rng):
 # -----------------------------------------------------------------------------
 
 def _repack_window(prob_info, src, bays, bay_u, w1, w2, w3, raster, rng,
-                   deadline, forced=False, k_orders=4, max_destroy=30):
+                   deadline, forced=False, k_orders=4, max_destroy=30,
+                   mode='sbay', win_scale=2.0):
     """Pick the most congested (bay, time-window) from `src`, destroy every block
     of that bay whose [entry,exit) intersects it, and rebuild the destroyed set
     jointly (k trial orders, greedy earliest-feasible raster placement against the
     fixed un-destroyed neighbours). Blocks that fail to place in the bay go through
     the normal all-bay repair. Returns a NEW complete assignment dict (candidate),
-    or None; the caller obj-gates acceptance. Never mutates `src`."""
+    or None; the caller obj-gates acceptance. Never mutates `src`.
+    v15: `mode='xbay'` delegates to `_repack_xbay` (destroy across ALL bays, free-
+    bay rebuild); `win_scale` scales the window width (2.0 == v14). mode='sbay'
+    with win_scale=2.0 is byte-identical to v14."""
     if raster is None or not _HAVE_NUMPY:
         return None
+    if mode == 'xbay' and len(bays) >= 2:
+        return _repack_xbay(prob_info, src, bays, bay_u, w1, w2, w3, raster, rng,
+                            deadline, forced=forced, win_scale=win_scale)
     blocks_data = prob_info["blocks"]
     n_bays = len(bays)
     n = len(blocks_data)
@@ -998,7 +1125,7 @@ def _repack_window(prob_info, src, bays, bay_u, w1, w2, w3, raster, rng,
     procs = [int(b["processing_time"]) for b in blocks_data]
     areas = [_min_area(b) for b in blocks_data]
     pbar = max(1.0, sum(procs) / max(1, n))
-    win_w = max(1, int(2 * pbar))
+    win_w = max(1, int(win_scale * pbar))
     sched, bay_loads = _rebuild_sched(src, blocks_data, n_bays)
 
     # -- congestion metric: candidate windows keyed at tardy/delayed entries -----
@@ -1110,9 +1237,559 @@ def _repack_window(prob_info, src, bays, bay_u, w1, w2, w3, raster, rng,
     return work
 
 
+def _repack_xbay(prob_info, src, bays, bay_u, w1, w2, w3, raster, rng, deadline,
+                 forced=False, k_orders=3, max_destroy=24, win_scale=2.0):
+    """v15 r2: cross-bay Z3 GROUP RELOCATION. The r1 congestion-window variant
+    measured hopeless on prob_31 (best candidate +12.3M: destroying the tardy
+    peak and rebuilding one-at-a-time re-created +932..+5131 tardiness units at
+    w1=13333, drowning real Z3 gains of -552..-1232 pref units; 6-17 of 40
+    blocks fell to _force_place). The measured fix: harvest ONLY the Z3 money,
+    never touching the tardy cluster.
+      * movable = off-preference AND currently non-tardy blocks;
+      * window score = w3 x recoverable pref gap of movable blocks in window,
+        DISCOUNTED by the window's all-bay area-time utilization (quiet windows
+        first -- that is where preferred-bay space exists);
+      * destroy = movable blocks intersecting the picked window across ALL bays
+        (cap `max_destroy`, highest pref gain first);
+      * rebuild with `_place_block(forced=False)`: Pass A zero-tardiness slots
+        in preference-desc bay order first (w1-dominant instances take the most
+        preferred bay with a zero slot -- exactly the Z3-greedy move), Pass B
+        least-tardy backstop. Group destroy is what single-block _z3_relocate
+        cannot do: freeing several off-pref blocks at once unlocks chain swaps
+        (A wants B's bay while B occupies A's target).
+    Returns a NEW complete assignment dict or None; caller obj-gates (a rebuild
+    that turns a movable block tardy pays w1 and is rejected). Never mutates
+    `src`."""
+    blocks_data = prob_info["blocks"]
+    n_bays = len(bays)
+    n = len(blocks_data)
+    dues = [int(b["due_date"]) for b in blocks_data]
+    procs = [int(b["processing_time"]) for b in blocks_data]
+    areas = [_min_area(b) for b in blocks_data]
+    prefs_of = [b["bay_preferences"] for b in blocks_data]
+    prefmax = [max(p) for p in prefs_of]
+    pbar = max(1.0, sum(procs) / max(1, n))
+    win_w = max(1, int(win_scale * pbar))
+    tot_area = max(1.0, sum(b.width * b.height for b in bays))
+
+    # movable = off-pref AND non-tardy; pref gain keyed by block
+    gain = {}
+    for bi, a in src.items():
+        offp = prefmax[bi] - prefs_of[bi][a["bay_id"]]
+        if offp > 0 and a["exit_time"] <= dues[bi]:
+            gain[bi] = offp
+    if len(gain) < 2:
+        return None
+
+    # -- candidate TIME windows centred at movable entries; score = w3*z3sum
+    #    discounted by all-bay area-time utilization (prefer quiet windows) ----
+    centers = {int(src[bi]["entry_time"]) for bi in gain}
+    cands = []
+    for c in centers:
+        lo, hi = c, c + win_w
+        z3sum = 0.0
+        occ = 0.0
+        for bi, a in src.items():
+            ov = min(hi, a["exit_time"]) - max(lo, a["entry_time"])
+            if ov > 0:
+                occ += areas[bi] * ov
+                g = gain.get(bi)
+                if g:
+                    z3sum += g
+        if z3sum <= 0:
+            continue
+        util = occ / (tot_area * win_w)
+        cands.append((w3 * z3sum * (1.0 - min(0.95, util)), lo, hi))
+    if not cands:
+        return None
+    cands.sort(key=lambda z: -z[0])
+    pick = cands[rng.randrange(min(3, len(cands)))] if rng is not None else cands[0]
+    _, lo, hi = pick
+
+    # -- destroy the movable blocks intersecting the window ---------------------
+    inwin = [bi for bi in gain
+             if src[bi]["entry_time"] < hi and src[bi]["exit_time"] > lo]
+    if len(inwin) < 2:
+        return None
+    if len(inwin) > max_destroy:
+        inwin.sort(key=lambda bi: -gain[bi])
+        inwin = inwin[:max_destroy]
+    dset = set(inwin)
+    fixed_work = {bi: dict(a) for bi, a in src.items() if bi not in dset}
+
+    # -- k trial orders (zero-slot placement, free bay choice) ------------------
+    orders = [
+        sorted(inwin, key=lambda bi: -gain[bi]),                 # pref-gain desc
+        sorted(inwin, key=lambda bi: (dues[bi], procs[bi])),     # due-asc
+        sorted(inwin, key=lambda bi: -areas[bi]),                # area-desc
+    ][:k_orders]
+
+    best = None  # (obj, work)
+    for od in orders:
+        if time.time() > deadline:
+            break
+        sched2, loads2 = _rebuild_sched(fixed_work, blocks_data, n_bays)
+        work = {bi: dict(a) for bi, a in fixed_work.items()}
+        for bi in od:
+            if time.time() > deadline:
+                break        # abandon this order; len(work)!=n discards it
+            blk = blocks_data[bi]
+            place = _place_block(bi, blk, bays, sched2, loads2, bay_u, w1, w2, w3,
+                                 forced=False, slot_time_cap=40, slot_pos_cap=30,
+                                 raster=raster)
+            # RESTORE-FALLBACK (r2 probe finding: Pass A's corner enumeration
+            # misses zero slots -- even the block's own vacated position -- and
+            # Pass B then lands it TARDY, +421..+933 o1 units per candidate,
+            # drowning the Z3 gain). Re-validate the ORIGINAL placement against
+            # the partial rebuild and keep the cheaper of (new, original):
+            # relocate who benefits, restore who doesn't. Cost = w1*tard +
+            # w3*offpref (the only per-block objective terms).
+            oa = src[bi]
+            o_bay = oa["bay_id"]
+            nb0 = _mkblock(bi, blk, oa["x"], oa["y"], oa["orient_idx"])
+            relx0 = _time_overlap_rel(sched2[o_bay], oa["entry_time"],
+                                      oa["exit_time"])
+            orig_ok = _can_place(bays[o_bay], relx0, nb0, oa["entry_time"],
+                                 oa["exit_time"])
+            if place is not None:
+                new_cost = (w1 * max(0, place[5] - dues[bi])
+                            + w3 * (prefmax[bi] - prefs_of[bi][place[0]]))
+                orig_cost = w3 * gain[bi]        # original is non-tardy
+                if orig_ok and orig_cost <= new_cost + 1e-9:
+                    place = (o_bay, oa["x"], oa["y"], oa["orient_idx"],
+                             oa["entry_time"], oa["exit_time"])
+            elif orig_ok:
+                place = (o_bay, oa["x"], oa["y"], oa["orient_idx"],
+                         oa["entry_time"], oa["exit_time"])
+            if place is None:
+                place = _force_place(bi, blk, bays, sched2)
+            _add(sched2, loads2, work, bi, blk, place)
+        if len(work) != n:
+            continue
+        o = _objective(work, blocks_data, bays, bay_u, w1, w2, w3)[0]
+        if best is None or o < best[0]:
+            best = (o, work)
+    if best is None:
+        return None
+    return best[1]
+
+
+# -----------------------------------------------------------------------------
+# v17 EXACT PACKING WINDOW (CP-SAT candidate-menu matheuristic; heuristic_17 #2)
+# -----------------------------------------------------------------------------
+
+_MREL = {}   # ((bi1,oi1,bi2,oi2,dx,dy) -> (collide, blocked1by2, blocked2by1))
+_MREL_CAP = 2_000_000
+
+
+def _mask_pair_rel(raster, bi1, oi1, x1, y1, bi2, oi2, x2, y2):
+    """Conservative pairwise spatial relations between two candidate
+    placements, from the raster masks (soundness: masks are supersets of the
+    polygons, so False here proves the exact relation is False; True may be a
+    false positive, which only ADDS timing constraints -- never unsound).
+    Returns (collide, blocked1by2, blocked2by1):
+      collide      -- any same-layer mask overlap (=> presence intervals must
+                      be disjoint);
+      blocked1by2  -- block1's crane prism (layers >= k over its own layer k)
+                      intersects block2's mask => 2's presence obstructs 1's
+                      entry/exit moments (entry and exit share geometry).
+    Cached by relative offset (translation-invariant)."""
+    if x1 <= x2:
+        key = (bi1, oi1, bi2, oi2, x2 - x1, y2 - y1)
+        swap = False
+    else:
+        key = (bi2, oi2, bi1, oi1, x1 - x2, y1 - y2)
+        swap = True
+    v = _MREL.get(key)
+    if v is None:
+        m1, c1x, c1y = raster.mask(key[0], key[1])
+        m2, c2x, c2y = raster.mask(key[2], key[3])
+        nl1 = m1.shape[0]; nl2 = m2.shape[0]
+        r1, q1 = c1y, c1x                      # block1 at origin
+        r2, q2 = key[5] + c2y, key[4] + c2x    # block2 at (dx, dy)
+        r0 = max(r1, r2); rE = min(r1 + m1.shape[1], r2 + m2.shape[1])
+        q0 = max(q1, q2); qE = min(q1 + m1.shape[2], q2 + m2.shape[2])
+        if rE <= r0 or qE <= q0:
+            v = (False, False, False)
+        else:
+            s1 = m1[:, r0 - r1:rE - r1, q0 - q1:qE - q1]
+            s2 = m2[:, r0 - r2:rE - r2, q0 - q2:qE - q2]
+            col = False
+            for l in range(min(nl1, nl2)):
+                if (s1[l] & s2[l]).any():
+                    col = True
+                    break
+            b12 = False   # 1's prism (its layer k vs 2's layers >= k)
+            for k in range(nl1):
+                if b12:
+                    break
+                for l in range(k, nl2):
+                    if (s1[k] & s2[l]).any():
+                        b12 = True
+                        break
+            b21 = False
+            for k in range(nl2):
+                if b21:
+                    break
+                for l in range(k, nl1):
+                    if (s2[k] & s1[l]).any():
+                        b21 = True
+                        break
+            v = (col, b12, b21)
+        if len(_MREL) < _MREL_CAP:
+            _MREL[key] = v
+    if swap:
+        return v[0], v[2], v[1]
+    return v
+
+
+def _exact_pair_rel(raster, bay, blocks_data, bi1, oi1, x1, y1,
+                    bi2, oi2, x2, y2):
+    """Two-tier pairwise relations for the exact-pack model. Tier 1: the
+    conservative mask test -- mask-clear pairs are PROVABLY clear (no exact
+    call needed; the common case on big bays). Tier 2: mask-interfering pairs
+    are refined with the exact cached geometry primitives (the same audited
+    contract _cpsat_retime trusts) -- crucial because masks false-positive on
+    every nestled pair, which made the original interlock infeasible in-model
+    (measured on prob_26: model optimum 411 > incumbent 345).
+    Returns (col, e12, x12, e21, x21):
+      col -- blocks spatially collide (presence intervals must be disjoint);
+      e12/x12 -- 2's presence obstructs 1's entry/exit moment;
+      e21/x21 -- 1's presence obstructs 2's entry/exit moment."""
+    col_m, b12_m, b21_m = _mask_pair_rel(raster, bi1, oi1, x1, y1,
+                                         bi2, oi2, x2, y2)
+    if not (col_m or b12_m or b21_m):
+        return (False, False, False, False, False)
+    A = _mkblock(bi1, blocks_data[bi1], x1, y1, oi1)
+    B = _mkblock(bi2, blocks_data[bi2], x2, y2, oi2)
+    col = _collide(bay, A, B) if col_m else False
+    if col:
+        return (True, False, False, False, False)
+    e12 = _entry_blocked(bay, B, A) if b12_m else False
+    x12 = _exit_blocked(bay, B, A) if b12_m else False
+    e21 = _entry_blocked(bay, A, B) if b21_m else False
+    x21 = _exit_blocked(bay, A, B) if b21_m else False
+    return (False, e12, x12, e21, x21)
+
+
+def _exact_pack_window(prob_info, src, bays, bay_u, w1, w2, w3, raster, rng,
+                       deadline, forced=False, budget_s=15.0, max_destroy=14,
+                       K=12, win_scale=2.0, pair_cap=12000):
+    """v17 EXACT PACKING WINDOW. Pick a congested (bay, time-window) exactly as
+    the greedy repack does, destroy up to `max_destroy` intersecting blocks,
+    and let CP-SAT choose ONE placement per destroyed block from a menu of up
+    to K raster-feasible candidates plus integer entry times, minimizing
+    w1 * total tardiness of the destroyed set. Fixed neighbours are handled
+    two ways: menu candidates from `scan_scoped` are mask-disjoint from EVERY
+    fixed block in the widened window (feasible vs fixed at ANY time -- no
+    constraint needed); the ORIGINAL placements (always added to the menu) DO
+    interfere with fixed blocks, so they get exact v12-audited var-fixed
+    timing constraints from the conservative mask relations. Cross-candidate
+    relations likewise. The solved placement set is exact-validated with
+    _can_place before being returned; the caller obj-gates. Returns a NEW
+    complete assignment dict or None. Never mutates `src`."""
+    try:
+        from ortools.sat.python import cp_model
+    except Exception:
+        return None
+    if raster is None or not _HAVE_NUMPY:
+        return None
+    import os as _osx
+    _dbg = _osx.environ.get("OGC_XPACK_DEBUG")
+
+    def dlog(msg):
+        if _dbg:
+            print(f"[xpack] {msg}", flush=True)
+
+    t_end = min(deadline, time.time() + budget_s)
+    if time.time() >= t_end - 2.0:
+        return None
+    blocks_data = prob_info["blocks"]
+    n_bays = len(bays)
+    n = len(blocks_data)
+    dues = [int(b["due_date"]) for b in blocks_data]
+    rels = [int(b["release_time"]) for b in blocks_data]
+    procs = [int(b["processing_time"]) for b in blocks_data]
+    areas = [_min_area(b) for b in blocks_data]
+    pbar = max(1.0, sum(procs) / max(1, n))
+    win_w = max(1, int(win_scale * pbar))
+    sched, _loads = _rebuild_sched(src, blocks_data, n_bays)
+
+    # -- window selection: identical congestion metric to _repack_window -------
+    cands_w = []
+    for bj in range(n_bays):
+        items = sched[bj]
+        if len(items) < 2:
+            continue
+        centers = set()
+        for (blk, e, ex, bb) in items:
+            bi = blk.block_id
+            if ex > dues[bi] or e > rels[bi]:
+                centers.add(int(e))
+        for c in centers:
+            lo, hi = c, c + win_w
+            score = 0.0
+            for (blk, e, ex, bb) in items:
+                ov = min(hi, ex) - max(lo, e)
+                if ov > 0:
+                    bi = blk.block_id
+                    score += areas[bi] * ov + w1 * max(0, ex - dues[bi])
+            cands_w.append((score, bj, lo, hi))
+    if not cands_w:
+        return None
+    cands_w.sort(key=lambda z: -z[0])
+    # rotate among the top-8 windows: repeated shots on one incumbent should
+    # attack DIFFERENT windows (measured: top-3 centers often alias to the
+    # same congested cluster).
+    pick = (cands_w[rng.randrange(min(8, len(cands_w)))]
+            if rng is not None else cands_w[0])
+    _, bj, lo, hi = pick
+    bay = bays[bj]
+    items = sched[bj]
+    D = [it[0].block_id for it in items if it[1] < hi and it[2] > lo]
+    if len(D) < 2:
+        return None
+    if len(D) > max_destroy:
+        D.sort(key=lambda bi: -(max(0, src[bi]["exit_time"] - dues[bi])
+                                + 1.0 / (1 + abs(src[bi]["entry_time"] - lo))))
+        D = D[:max_destroy]
+    dset = set(D)
+
+    # -- entry-time domains + the fixed relation set over their whole span -----
+    lo2, hi2 = lo - win_w, hi + win_w
+    lbs, ubs = {}, {}
+    for bi in D:
+        e0 = src[bi]["entry_time"]
+        lbs[bi] = min(max(rels[bi], lo2), e0)
+        ubs[bi] = max(hi2 - procs[bi], e0)
+    span_lo = min(lbs.values())
+    span_hi = max(ubs[bi] + procs[bi] for bi in D)
+    fixed = [it for it in items
+             if it[0].block_id not in dset
+             and it[1] < span_hi and it[2] > span_lo]
+    # menus are enumerated against ONLY the fixed blocks overlapping the picked
+    # window (requiring clearance against the whole widened span left menus
+    # empty in congested bays -- measured on prob_26: every shot degenerated to
+    # a pure retime). EVERY candidate then gets mask-based var-fixed timing
+    # constraints below, so entry times navigate around the fixed presences.
+    actives_win = [(it[0].block_id, it[0].orient_idx, it[0].x, it[0].y)
+                   for it in fixed if it[1] < hi and it[2] > lo]
+
+    # -- candidate menus --------------------------------------------------------
+    menus = {}     # bi -> [(oi, x, y)]
+    for bi in D:
+        if time.time() > t_end - 3.0:
+            return None
+        blk = blocks_data[bi]
+        menu = []
+        per_oi = max(4, K // max(1, len(_unique_orients(blk))))
+        for oi in _unique_orients(blk):
+            if not _orient_fits(blk, oi, bay):
+                continue
+            feas, cx0, cy0, occ_fp = raster.scan_scoped(bj, actives_win, bi, oi)
+            if feas is None or not feas.any():
+                continue
+            cells = _order_cells(raster, feas, cx0, cy0, bi, oi,
+                                 raster.W[bj], occ_fp, True, None)
+            for (x, y) in cells[:per_oi]:
+                menu.append((oi, x, y))
+                if len(menu) >= K:
+                    break
+            if len(menu) >= K:
+                break
+        a0 = src[bi]
+        menu.append((a0["orient_idx"], a0["x"], a0["y"]))  # original, always last
+        menus[bi] = menu
+
+    # -- cross-candidate relation collection (cheap cached mask ops), with
+    #    ADAPTIVE MENU SHRINK: near a congested window most candidate pairs
+    #    interfere, so K=25 menus can exceed any workable pair budget (first
+    #    unit run: every shot bailed at pair_cap). Halve K until the
+    #    interfering-pair count fits; the ORIGINAL placement (last entry)
+    #    always survives truncation. -------------------------------------------
+    Dl = list(D)
+
+    def collect(menus_d):
+        out = []
+        cnt = 0
+        for u in range(len(Dl)):
+            for v_ in range(u + 1, len(Dl)):
+                i, j = Dl[u], Dl[v_]
+                for pi, (oi1, x1, y1) in enumerate(menus_d[i]):
+                    for pj, (oi2, x2, y2) in enumerate(menus_d[j]):
+                        cnt += 1
+                        if (cnt & 255) == 0 and time.time() > t_end - 2.0:
+                            return None
+                        rel = _exact_pair_rel(raster, bay, blocks_data,
+                                              i, oi1, x1, y1, j, oi2, x2, y2)
+                        if any(rel):
+                            out.append((i, pi, j, pj) + rel)
+                            if len(out) > 6 * pair_cap:
+                                return out    # hopeless at this K: shrink now
+        return out
+
+    k_eff = K
+    rels = collect(menus)
+    while rels is not None and len(rels) > pair_cap and k_eff > 4:
+        k_eff = max(4, k_eff // 2)
+        menus = {bi: (menus[bi][:k_eff] + [menus[bi][-1]]) for bi in D}
+        rels = collect(menus)
+    dlog(f"win=({bj},[{lo},{hi})) D={len(D)} menus="
+         f"{sum(len(v) for v in menus.values())} k_eff={k_eff} "
+         f"rels={'None' if rels is None else len(rels)} "
+         f"tleft={t_end - time.time():.1f}")
+    if rels is None or len(rels) > pair_cap:
+        return None
+
+    # -- CP-SAT model -----------------------------------------------------------
+    m = cp_model.CpModel()
+    X, E, T = {}, {}, {}
+    for bi in D:
+        a0 = src[bi]
+        E[bi] = m.NewIntVar(int(lbs[bi]), int(ubs[bi]), f"e{bi}")
+        m.AddHint(E[bi], int(a0["entry_time"]))
+        T[bi] = m.NewIntVar(0, int(span_hi) + 10, f"t{bi}")
+        m.Add(T[bi] >= E[bi] + procs[bi] - dues[bi])
+        xs = []
+        for pi in range(len(menus[bi])):
+            X[bi, pi] = m.NewBoolVar(f"x{bi}_{pi}")
+            xs.append(X[bi, pi])
+        m.AddExactlyOne(xs)
+        m.AddHint(X[bi, len(menus[bi]) - 1], 1)   # original placement
+
+    def outside_vv(i, off_i, j, tie_bad, enf):
+        b1, b2 = m.NewBoolVar(""), m.NewBoolVar("")
+        m.Add(E[i] + off_i <= E[j] - (1 if tie_bad == "left" else 0)
+              ).OnlyEnforceIf(enf + [b1])
+        m.Add(E[i] + off_i >= E[j] + procs[j] + (1 if tie_bad == "right" else 0)
+              ).OnlyEnforceIf(enf + [b2])
+        m.AddBoolOr([b1, b2]).OnlyEnforceIf(enf)
+
+    def outside_vf(i, off_i, lo_c, hi_c, tie_left, tie_right, enf):
+        b1, b2 = m.NewBoolVar(""), m.NewBoolVar("")
+        m.Add(E[i] + off_i <= lo_c - (1 if tie_left else 0)
+              ).OnlyEnforceIf(enf + [b1])
+        m.Add(E[i] + off_i >= hi_c + (1 if tie_right else 0)
+              ).OnlyEnforceIf(enf + [b2])
+        m.AddBoolOr([b1, b2]).OnlyEnforceIf(enf)
+
+    npairs = 0
+    # -- candidate-vs-FIXED constraints (granular exact relations; encoding
+    #    mirrors _cpsat_retime_window's audited var-fixed block) ----------------
+    for bi in D:
+        for pi, (oi, x, y) in enumerate(menus[bi]):
+            for (fb, fa, fe, fbb) in fixed:
+                fj = fb.block_id
+                col, e_cf, x_cf, e_fc, x_fc = _exact_pair_rel(
+                    raster, bay, blocks_data, bi, oi, x, y,
+                    fj, fb.orient_idx, fb.x, fb.y)
+                if not (col or e_cf or x_cf or e_fc or x_fc):
+                    continue
+                enf = [X[bi, pi]]
+                fa_i, fe_i = int(fa), int(fe)
+                npairs += 1
+                if col:
+                    outside_vf(bi, procs[bi], fa_i, fe_i + procs[bi],
+                               False, False, enf)
+                    continue
+                if e_cf:      # fixed obstructs the candidate's entry moment
+                    outside_vf(bi, 0, fa_i, fe_i, fj < bi, False, enf)
+                if x_cf:      # fixed obstructs the candidate's exit moment
+                    outside_vf(bi, procs[bi], fa_i, fe_i, False, fj > bi, enf)
+                if e_fc:      # candidate obstructs the fixed block's entry (fa)
+                    b1, b2 = m.NewBoolVar(""), m.NewBoolVar("")
+                    m.Add(E[bi] >= fa_i + (1 if bi < fj else 0)
+                          ).OnlyEnforceIf(enf + [b1])
+                    m.Add(E[bi] + procs[bi] <= fa_i).OnlyEnforceIf(enf + [b2])
+                    m.AddBoolOr([b1, b2]).OnlyEnforceIf(enf)
+                if x_fc:      # candidate obstructs the fixed block's exit (fe)
+                    b3, b4 = m.NewBoolVar(""), m.NewBoolVar("")
+                    m.Add(E[bi] >= fe_i).OnlyEnforceIf(enf + [b3])
+                    m.Add(E[bi] + procs[bi] <= fe_i - (1 if bi > fj else 0)
+                          ).OnlyEnforceIf(enf + [b4])
+                    m.AddBoolOr([b3, b4]).OnlyEnforceIf(enf)
+        if time.time() > t_end - 2.0:
+            return None
+
+    # -- cross-candidate constraints (granular exact relations; the encoding
+    #    mirrors _cpsat_retime's audited outside_vv / tie rules) ----------------
+    for (i, pi, j, pj, col, e12, x12, e21, x21) in rels:
+        if time.time() > t_end - 1.5:
+            return None
+        enf = [X[i, pi], X[j, pj]]
+        if col:
+            b1, b2 = m.NewBoolVar(""), m.NewBoolVar("")
+            m.Add(E[i] + procs[i] <= E[j]).OnlyEnforceIf(enf + [b1])
+            m.Add(E[j] + procs[j] <= E[i]).OnlyEnforceIf(enf + [b2])
+            m.AddBoolOr([b1, b2]).OnlyEnforceIf(enf)
+            continue
+        if e12:   # j's presence obstructs i's entry moment
+            outside_vv(i, 0, j, "left" if j < i else "none", enf)
+        if x12:   # j's presence obstructs i's exit moment
+            outside_vv(i, procs[i], j, "right" if j > i else "none", enf)
+        if e21:
+            outside_vv(j, 0, i, "left" if i < j else "none", enf)
+        if x21:
+            outside_vv(j, procs[j], i, "right" if i > j else "none", enf)
+
+    m.Minimize(sum(T.values()))
+    rem = t_end - time.time() - 0.5
+    dlog(f"model built: npairs_vf={npairs} rem={rem:.1f}")
+    if rem < 1.0:
+        return None
+    before = sum(max(0, src[bi]["exit_time"] - dues[bi]) for bi in D)
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = rem
+    solver.parameters.num_search_workers = 1
+    try:
+        status = solver.Solve(m)
+    except Exception:
+        return None
+    after = (sum(int(solver.Value(T[bi])) for bi in D)
+             if status in (cp_model.OPTIMAL, cp_model.FEASIBLE) else -1)
+    dlog(f"solve status={solver.StatusName(status)} before={before} "
+         f"after={after}")
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        return None
+    if after >= before:
+        return None
+
+    # -- assemble + EXACT validation (belt and braces over the conservative
+    #    mask relations; _can_place is the same primitive the whole search
+    #    trusts, and the parent still officially verifies) ----------------------
+    chosen = {}
+    for bi in D:
+        for pi in range(len(menus[bi])):
+            if solver.Value(X[bi, pi]):
+                oi, x, y = menus[bi][pi]
+                e = int(solver.Value(E[bi]))
+                chosen[bi] = (oi, x, y, e, e + procs[bi])
+                break
+    full_bay = [it for it in sched[bj] if it[0].block_id not in dset]
+    ver = []
+    for bi, (oi, x, y, e, ex) in chosen.items():
+        nb = _mkblock(bi, blocks_data[bi], x, y, oi)
+        ver.append((nb, e, ex, nb.bounding_rect()))
+    for k_ in range(len(ver)):
+        nb, e, ex, _bb = ver[k_]
+        others = [(it[0], it[1], it[2]) for it in full_bay] + \
+                 [(v2[0], v2[1], v2[2]) for j2, v2 in enumerate(ver) if j2 != k_]
+        if not _can_place(bay, others, nb, e, ex):
+            dlog(f"exact validation FAILED for block {nb.block_id}")
+            return None      # conservative model missed something: discard
+    work = {bi: dict(a) for bi, a in src.items()}
+    for bi, (oi, x, y, e, ex) in chosen.items():
+        work[bi] = {"block_id": bi, "bay_id": bj, "x": int(x), "y": int(y),
+                    "orient_idx": oi, "entry_time": int(e),
+                    "exit_time": int(ex)}
+    if len(work) != n:
+        return None
+    return work
+
+
 def _improve(prob_info, assignments, bays, bay_u, w1, w2, w3, deadline, forced,
              seed=4242, sa=False, on_best=None, inbox=None, raster=None,
-             repack_every=0):
+             repack_every=0, xbay=False, repack_win_scale=2.0, deep=False):
     """Basin-hopping destroy/repair. Tracks `best` separately from the working
     `cur`; returns `best` -> monotone in the RESULT. Diversifies destroy mode and
     repair ordering, and applies an escape "kick" (a larger destroy accepted even
@@ -1142,6 +1819,7 @@ def _improve(prob_info, assignments, bays, bay_u, w1, w2, w3, deadline, forced,
     T0 = max(1.0, 0.01 * best_obj) if sa else 0.0
     T = T0
     rounds = 0
+    repack_idx = 0      # v15: counts fired repack rounds -> alternate sbay/xbay
     no_improve = 0      # for kick triggering (kicks reset this)
     since_best = 0      # rounds since best improved (kicks do NOT reset this)
     since_o1 = 0        # rounds since best TARDINESS (obj1) improved -- the real
@@ -1183,9 +1861,24 @@ def _improve(prob_info, assignments, bays, bay_u, w1, w2, w3, deadline, forced,
         # (W0 + v13-basin tickets) skips this entirely -> byte-exact v13.
         if (repack_every > 0 and raster is not None and best_tardy > 0
                 and rounds % repack_every == 0):
+            # v15: alternate single-bay / cross-bay round-robin. First fire is
+            # single-bay (== v14); cross-bay every other fire when enabled. The
+            # counter consumes no rng, so xbay=False is byte-exact v14.
+            # v16 `deep` (reclaimed instances only): destroy cap 30 -> 45 and
+            # the window scale rotates per fire over {2,1,3,4}*pbar.
+            mode = 'sbay'
+            if xbay and n_bays >= 2 and (repack_idx % 2 == 1):
+                mode = 'xbay'
+            ws = repack_win_scale
+            md = 30
+            if deep:
+                ws = (2.0, 1.0, 3.0, 4.0)[(repack_idx // 2) % 4]
+                md = 45
+            repack_idx += 1
             try:
                 work = _repack_window(prob_info, cur, bays, bay_u, w1, w2, w3,
-                                      raster, rng, deadline, forced=forced)
+                                      raster, rng, deadline, forced=forced,
+                                      mode=mode, win_scale=ws, max_destroy=md)
             except Exception:
                 work = None
             if work is not None and len(work) == n:
@@ -2812,23 +3505,73 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
         push(o, a)
         return o, a
 
+    # round-3: structural-overload detection (moved up in v16: the reclaim rule
+    # needs it before the raster gate). Fluid-target cache below.
+    overload = _overload_ratio(prob_info, bays)
+    # v16 ANCHOR RECLAIM rule (instance-computed, no name lookups): the
+    # v9-replica anchor is provably non-competitive on giants (forced n>=250)
+    # and structurally overloaded instances (overload > 1.05) -- on train this
+    # selects exactly {27, 37, 38, 39, 40} (all with v9-path results 1.6-2.2x
+    # worse than the v14 winners; see results.csv). There (and ONLY there) W0
+    # runs a productive dispatcher stream and repack deepening (`deep`) is on.
+    reclaim = (forced and len(blocks_data) >= 250) or overload > 1.05
+
     # v13: raster engine (shared masks). Every non-anchor worker gets one: the
     # dispatcher workers (W2/W3) use its occupancy for construction, and ALL
     # forced workers (incl. W1) use its scoped scan for raster-windowed repair
-    # inside the improver. W0 stays byte-exact v9 and never touches a raster.
-    raster = _Raster(prob_info, bays) if (_HAVE_NUMPY and wid != 0) else None
+    # inside the improver. W0 stays byte-exact v9 and never touches a raster --
+    # EXCEPT on reclaimed instances (v16), where W0 is a dispatcher stream.
+    # v17: W0 also gets a raster on forced non-giants (the v13-rotation
+    # restoration slot below) -- the v9 replica remains only on non-forced.
+    raster = _Raster(prob_info, bays) if (_HAVE_NUMPY and
+                                          (wid != 0 or reclaim or forced)
+                                          ) else None
 
-    def improve(assign, seed, until=None, repack_every=0):
+    def improve(assign, seed, until=None, repack_every=0, win_scale=2.0,
+                xbay=None):
         dl = deadline if until is None else min(until, deadline)
+        # v15: xbay default follows `forced` (giant W3 repack specialist gets it;
+        # non-forced fallback improves stay v14). polish passes it explicitly
+        # per harvest cycle (cycle 1 always False == v14's improve-1 config).
+        # win_scale rotates the repack window width across harvest cycles.
+        # v16: repack deepening (`deep=reclaim`) on the reclaimed set only.
+        xb = forced if xbay is None else xbay
         r, o = _improve(prob_info, assign, bays, bay_u, w1, w2, w3,
                         dl, forced, seed=seed, on_best=push, inbox=inbox,
-                        raster=raster, repack_every=repack_every)
+                        raster=raster, repack_every=repack_every,
+                        xbay=xb, repack_win_scale=win_scale, deep=reclaim)
         push(o, r, force=True)
         return o, r
 
-    # round-3: structural-overload detection + fluid-target cache. targets are
-    # deterministic per (c_eff, mode), so compute each grid point once.
-    overload = _overload_ratio(prob_info, bays)
+    # v17: EXACT PACKING WINDOW shots (CP-SAT candidate-menu matheuristic;
+    # obj-gated, ortools-guarded -- on any failure the greedy paths stand).
+    _xrng = random.Random(1717)
+
+    def exact_shots(base, ob, n_shots=2, budget_s=12.0, until=None):
+        """Fire up to n_shots exact-packing windows on `base`; each accepted
+        shot strictly improves the internal objective (pushed). Returns the
+        possibly-improved (base, ob)."""
+        if raster is None or not _HAVE_NUMPY:
+            return base, ob
+        dl_all = deadline if until is None else min(until, deadline)
+        for _ in range(n_shots):
+            if time.time() >= dl_all - 3.0:
+                break
+            try:
+                w_ = _exact_pack_window(prob_info, base, bays, bay_u,
+                                        w1, w2, w3, raster, _xrng, dl_all,
+                                        forced=forced, budget_s=budget_s)
+            except Exception:
+                w_ = None
+            if w_ is not None:
+                o_ = iobj(w_)
+                if o_ < ob - 1e-9:
+                    push(o_, w_, force=True)
+                    base, ob = w_, o_
+        return base, ob
+
+    # fluid-target cache. targets are deterministic per (c_eff, mode), so
+    # compute each grid point once.
     _tgt_cache = {}
 
     def fluid_tgt(spec):
@@ -2852,17 +3595,124 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
         push(o, a)
         return o, a
 
-    def polish(assign, seed, repack_every=0):
-        """improve -> CP-SAT exact time-repair -> improve the winner -> Z3
-        relocation endgame. The CP pass fires at a hard-latest 62% of the
-        window (or immediately when the improver converges early == a stall
-        gate) so the improver both feeds it a good geometry and gets time to
-        exploit the re-timed schedule after. v13: the tail reserves a small
-        slice for the tardiness-neutral preference-relocation pass (#3c).
-        v14: `repack_every` interleaves joint-window-repack rounds inside both
-        improve passes (0 == classic v13 polish)."""
+    def polish(assign, seed, repack_every=0, alts=None):
+        """v15 r2 polish. Three regimes:
+
+        GIANTS (forced, n>=250) -> EXACT v14 envelope (improve -> CP-SAT ->
+        improve -> Z3 endgame, sbay repack only). r1 harvest measured
+        zero-to-negative there (prob_38 +53k); flat beats the re-roll.
+
+        FORCED non-giant -> BASIN-DIVERSITY HARVEST from DISTINCT
+        CONSTRUCTIONS. CP-SAT retime skipped (measured zero on forced). Cycle 1
+        = v14's improve-1 config EXACTLY (same seed, sbay-only, 2*pbar window,
+        until cp_at) -- protection of v14's banked draws. Cycles 2-3 (seed+1/+2,
+        xbay z3-relocation round-robin, widths {1,3}*pbar) start from `alts`
+        (the lottery's runner-up constructions) when available, else from
+        best-so-far: r1 measured that improve-seed variation from a converged
+        incumbent NEVER escapes its basin (31/33/30/34 byte-flat); v14's
+        historical spread came from CONSTRUCTION draws, so basin diversity must
+        be re-seeded at the construction level. Every cycle-best is pushed
+        (min wins) -- worst case a fresh descent lands above the incumbent and
+        contributes nothing.
+
+        NON-FORCED -> same harvest, with CP-SAT retime KEPT between cycles 1
+        and 2 (prob_21's historical win). Zero-tardy easies are inert (repack
+        gated on tardiness; improver early-stops).
+
+        All regimes finish with the tardiness-neutral Z3 preference-relocation
+        endgame (#3c)."""
+        z3_at = deadline - (min(12.0, 0.05 * window) if raster is not None
+                            else 0.0)
         cp_at = t_start + 0.62 * window
-        o1, r1 = improve(assign, seed, until=cp_at, repack_every=repack_every)
+        # v16 prob_27-class parity: non-giant overloaded instances share the
+        # giant polish envelope (single long v14-style improves; harvest cycles
+        # measured flat-to-negative on this class in v15 r1).
+        giant = forced and (len(blocks_data) >= 250 or overload > 1.05)
+        base, ob = assign, iobj(assign)
+
+        def cycles(specs):
+            nonlocal base, ob
+            for cs, sc, cyc_dl, xb, ai in specs:
+                if time.time() >= cyc_dl - 1.0:
+                    continue
+                src = base
+                if ai is not None and alts is not None and len(alts) > ai:
+                    src = alts[ai]
+                o_, r_ = improve(src, cs, until=cyc_dl,
+                                 repack_every=repack_every, win_scale=sc,
+                                 xbay=xb)
+                if o_ < ob:
+                    base, ob = r_, o_
+
+        if giant:
+            # -- EXACT v14 polish (see docstring) ------------------------------
+            o1, r1 = improve(assign, seed, until=cp_at,
+                             repack_every=repack_every, win_scale=2.0,
+                             xbay=False)
+            base, ob = r1, o1
+            try:
+                rc = _cpsat_retime(prob_info, r1, bays, blocks_data,
+                                   min(30.0, 0.12 * window), deadline)
+            except Exception:
+                rc = None
+            if rc is not None:
+                oc = iobj(rc)
+                push(oc, rc, force=True)
+                if oc < ob:
+                    base, ob = rc, oc
+            if time.time() < z3_at - 2.0:
+                o2, r2 = improve(base, seed + 1, until=z3_at,
+                                 repack_every=repack_every, win_scale=2.0,
+                                 xbay=False)
+                if o2 < ob:
+                    base, ob = r2, o2
+        elif forced:
+            mid2 = t_start + 0.80 * window
+            cycles([(seed, 2.0, cp_at, False, None)])
+            # v17: exact packing shots right after cycle 1 (they consume the
+            # head of cycle 2's window; the harvest cycles measured ~zero in
+            # v15/v16, so this is the cheapest slot for the new mechanism --
+            # cycle-1 pacing, i.e. the v14 improve-1 draw, stays intact).
+            # Targets 26/23/33/30-class density-limited forced instances.
+            base, ob = exact_shots(base, ob, n_shots=2, budget_s=12.0,
+                                   until=min(mid2, cp_at + 30.0))
+            cycles([(seed + 1, 1.0, mid2, True, 0),
+                    (seed + 2, 3.0, z3_at, True, 1)])
+        else:
+            o1, r1 = improve(assign, seed, until=cp_at,
+                             repack_every=repack_every, win_scale=2.0,
+                             xbay=False)
+            if o1 < ob:
+                base, ob = r1, o1
+            try:
+                rc = _cpsat_retime(prob_info, base, bays, blocks_data,
+                                   min(30.0, 0.12 * window), deadline)
+            except Exception:
+                rc = None
+            if rc is not None:
+                oc = iobj(rc)
+                push(oc, rc, force=True)
+                if oc < ob:
+                    base, ob = rc, oc
+            mid2 = t_start + 0.85 * window
+            cycles([(seed + 1, 1.0, mid2, True, 0),
+                    (seed + 2, 3.0, z3_at, True, 1)])
+        if raster is not None and time.time() < deadline - 0.5:
+            try:
+                rz, oz = _z3_relocate(prob_info, base, bays, bay_u,
+                                      w1, w2, w3, raster, deadline)
+                if rz is not None and oz < ob - 1e-9:
+                    push(oz, rz, force=True)
+            except Exception:
+                pass
+
+    def polish_v13(assign, seed):
+        """v17 RESTORATION polish: byte-clone of v13's polish -- improve ->
+        CP-SAT retime -> improve -> Z3 endgame; NO repack rounds, NO harvest
+        cycles, NO xbay (repack_every=0 keeps _improve byte-exact v13 per the
+        v14 contract). Used only by the restoration slot below."""
+        cp_at = t_start + 0.62 * window
+        o1, r1 = improve(assign, seed, until=cp_at)
         try:
             rc = _cpsat_retime(prob_info, r1, bays, blocks_data,
                                min(30.0, 0.12 * window), deadline)
@@ -2877,8 +3727,7 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
         z3_at = deadline - (min(12.0, 0.05 * window) if raster is not None
                             else 0.0)
         if time.time() < z3_at - 2.0:
-            o2, r2 = improve(base, seed + 1, until=z3_at,
-                             repack_every=repack_every)
+            o2, r2 = improve(base, seed + 1, until=z3_at)
             if o2 < ob:
                 base, ob = r2, o2
         if raster is not None and time.time() < deadline - 0.5:
@@ -2890,7 +3739,103 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
             except Exception:
                 pass
 
+    def pick_alts(cands, k=2, cap=2.0):
+        """v15 r2a: runner-up DISTINCT constructions for harvest re-seeding.
+        Distinct by internal objective (identical obj == identical build for the
+        deterministic lottery entries); capped at cap*best so a garbage draw is
+        never given a polish cycle."""
+        if not cands:
+            return None
+        srt = sorted(cands, key=lambda c: c[0])
+        best_o = srt[0][0]
+        seen = [best_o]
+        out = []
+        for o_c, a_c in srt[1:]:
+            if o_c > best_o * cap:
+                break
+            if all(abs(o_c - s) > 1e-9 for s in seen):
+                out.append(a_c)
+                seen.append(o_c)
+            if len(out) >= k:
+                break
+        return out or None
+
     if wid == 0:
+        # v16 ANCHOR RECLAIM: on {giant-forced OR overload>1.05} (train:
+        # {27,38,39}) the v9 replica is provably non-competitive (candidates
+        # ~2x worse, zero verify wins since v12) while its safety role is
+        # covered by the parent insurance build + empty-bay fallback + official
+        # best-first verify. Run a PRODUCTIVE stream instead: the kappa=2/
+        # alpha=0.5 dispatcher basin at FULL budget (W2 only ever samples it
+        # inside its 0.45w lottery cap) -> v14-envelope polish WITHOUT CP-SAT
+        # retime (forced: measured zero twice) -> Z3 relocation endgame. The
+        # improver runs deep repack (deep=reclaim) with sbay/xbay alternation.
+        # Any failure falls back to the v9 replica with the remaining budget.
+        if reclaim and raster is not None:
+            a0 = None
+            try:
+                _o0, a0 = dispatch(2.0, 0.5, alpha=0.5)
+            except Exception:
+                a0 = None
+            if a0 is not None:
+                cp_at = t_start + 0.62 * window
+                z3_at = deadline - min(12.0, 0.05 * window)
+                o1, r1 = improve(a0, seed=1616, until=cp_at, repack_every=3,
+                                 xbay=False)
+                base, ob = r1, o1
+                # v17: exact packing shots on the reclaimed stream (the free
+                # compute earmarked for the new mechanism; targets 39/26-class
+                # density + the saturated giants). Obj-gated; greedy paths
+                # stand on any failure.
+                base, ob = exact_shots(base, ob, n_shots=2, budget_s=15.0,
+                                       until=cp_at + 40.0)
+                if time.time() < z3_at - 2.0:
+                    o2, r2 = improve(base, seed=1617, until=z3_at,
+                                     repack_every=3, xbay=True)
+                    if o2 < ob:
+                        base, ob = r2, o2
+                base, ob = exact_shots(base, ob, n_shots=1, budget_s=15.0,
+                                       until=z3_at + 10.0)
+                if time.time() < deadline - 0.5:
+                    try:
+                        rz, oz = _z3_relocate(prob_info, base, bays, bay_u,
+                                              w1, w2, w3, raster, deadline)
+                        if rz is not None and oz < ob - 1e-9:
+                            push(oz, rz, force=True)
+                    except Exception:
+                        pass
+                return
+        # v17 RESTORATION SLOT (forced non-giants, overload <= 1.05): run the
+        # v13 W3-rotation lottery + repack-free v13 polish INSTEAD of the v9
+        # replica. Justification: (a) the attribution probe pinned v13's
+        # prob_30/33 winners to RAW builds of exactly this rotation (displaced
+        # by v14's beam tickets; recovering them in W3 broke prob_26's
+        # beam-input winner by +374k, so they are recovered HERE); (b) W0's v9
+        # replica is provably valueless on every forced non-giant (results.csv:
+        # v9 is 1.5-5x worse on 23/25/26/30/31/32/33); (c) the lottery's rng
+        # stream is deterministic and today's probe reproduced 4 of 5 target
+        # draws byte-exactly (33 within 30k, pacing-sensitive late build).
+        if forced and not reclaim and raster is not None:
+            drng = random.Random(9099)
+            cands = []
+            cap = t_start + 0.5 * window
+            plan = [(0.5, 0.5, 0.0, None), (1.0, 0.5, 0.5, None),
+                    (2.0, 0.5, 1.0, None), (4.0, 0.5, 0.0, None),
+                    (1.0, 2.0, 0.5, None), (2.0, 0.0, 1.0, None),
+                    (0.5, 1.0, 0.0, None), (4.0, 0.0, 0.5, None)]
+            gi = 0
+            while True:
+                kap, gam, al, ts_ = plan[gi % len(plan)]
+                gi += 1
+                try:
+                    cands.append(dispatch(kap, gam, drng, alpha=al, tspec=ts_))
+                except Exception:
+                    break
+                if time.time() >= cap or gi > 60:
+                    break
+            if cands:
+                polish_v13(min(cands, key=lambda c: c[0])[1], seed=3333)
+            return
         # W0 = EXACT v9 replica (same rng streams, same two-pass improver).
         # This is the no-regression anchor: the improver is basin-sensitive, so
         # only replaying v9's exact construction sequence guarantees v10 keeps
@@ -2898,6 +3843,45 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
         # construction that no plain EDD/AREA basin reaches). The worker gets a
         # slightly earlier deadline than v9's own (margin for the final put).
         _v9_search(prob_info, timelimit - 2.5, t_start, push=push)
+        return
+
+    # -- v17 RESTORATION SLOT (heuristic_17 #1): W2 on non-forced TARDY
+    # instances runs a byte-clone of v13's W3 branch -- the 8-entry no-beam
+    # jittered dispatcher lottery (drng 9099, cap 0.5w) + repack-free v13
+    # polish with CP-SAT retime. Attribution probe: v13's prob_21 winner =
+    # W3 polish improve(s3333, no repack) -> cpsat (1,380,772 reproduced
+    # exactly today) -- v14's repack_every=4 in W3's polish displaced it. W3
+    # keeps the CURRENT beam lottery (prob_35's banked 1,346,898 is a beam
+    # draw), easies (overload <= 0.44) keep the current W2 path (prob_1
+    # byte-safety), so this slot only ADDS v13's basins on 21/28/29/34/22
+    # (+224k pool); exposure is bounded to 24/36 (-82k worst case, and their
+    # v14 gains arrived exactly with beam == W3 paths).
+    if wid == 2 and raster is not None and not forced and overload > 0.44:
+        drng = random.Random(9099)
+        cands = []
+        cap = t_start + 0.5 * window
+        plan = [(0.5, 0.5, 0.0, None), (1.0, 0.5, 0.5, None),
+                (2.0, 0.5, 1.0, None), (4.0, 0.5, 0.0, None),
+                (1.0, 2.0, 0.5, None), (2.0, 0.0, 1.0, None),
+                (0.5, 1.0, 0.0, None), (4.0, 0.0, 0.5, None)]
+        gi = 0
+        while True:
+            kap, gam, al, ts_ = plan[gi % len(plan)]
+            gi += 1
+            try:
+                cands.append(dispatch(kap, gam, drng, alpha=al, tspec=ts_))
+            except Exception:
+                break
+            if time.time() >= cap or gi > 60:
+                break
+        if cands:
+            polish_v13(min(cands, key=lambda c: c[0])[1], seed=3333)
+        elif time.time() < deadline:
+            try:
+                _, a = build(_edd_order(blocks_data), forced)
+                improve(a, seed=3333)
+            except Exception:
+                pass
         return
 
     # -- W2 = dispatcher + volume-aware mini-lottery -> improver --------------
@@ -2946,7 +3930,9 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                 pass
         if cands:
             # v14: W2 is the repack-heavy worker (giants + overloaded prob_27).
-            polish(min(cands, key=lambda c: c[0])[1], seed=2222, repack_every=3)
+            # v15 r2a: runner-up constructions re-seed harvest cycles 2-3.
+            polish(min(cands, key=lambda c: c[0])[1], seed=2222, repack_every=3,
+                   alts=pick_alts(cands))
         else:  # dispatcher failed -> safe v11-style construction + improve
             try:
                 _, a = build(_area_order(blocks_data) if forced
@@ -2973,7 +3959,11 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
             push(iobj(a), a)
         except Exception:
             return
-        improve(a, seed=4444, repack_every=2)
+        # v16 r2: sbay/xbay alternation back ON at depth (deep=reclaim gives
+        # cap 45 + {2,1,3,4}*pbar rotation; xbay is now the obj-gated Z3 group
+        # relocation, worst case a no-op). The v15-r1 +53k slip came from the
+        # HARVEST envelope re-roll, which stays reverted (polish giant branch).
+        improve(a, seed=4444, repack_every=2, xbay=True)
         return
 
     # -- W3 = dispatcher lottery (kappa/gamma/jitter) -> improver -> CP-SAT ---
@@ -2996,6 +3986,15 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                 (2.0, 0.5, 1.0, None, False), (4.0, 0.5, 0.0, None, False),
                 (1.0, 2.0, 0.5, None, False), (2.0, 0.0, 1.0, None, False),
                 (0.5, 1.0, 0.0, None, False), (4.0, 0.0, 0.5, None, False)]
+        # v17 note: an earlier attempt gave forced non-giants v13's 8-entry
+        # rotation HERE (to recover prob_30/33's raw-build draws). Measured on
+        # the first ladder pass: it DID recover 30/33 (+358k) but broke
+        # prob_26 by +374k -- 26's banked winner is this polish on a
+        # BEAM-build lottery input, so the beam tickets must stay. The v13
+        # rotation lives in W0's forced-non-giant slot instead (see wid==0;
+        # W0's v9 replica is provably valueless there: v9 is 1.5-5x worse on
+        # every forced non-giant in results.csv), which recovers 30/33's raw
+        # builds without touching this lottery. v14 gate restored verbatim.
         if forced or overload > 0.44:
             plan = plan + [(1.0, 0.5, 0.0, None, True),
                            (2.0, 0.5, 0.5, None, True)]
@@ -3020,8 +4019,10 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                 break
         if cands:
             # v14: W3 dispatcher polish gains repack rounds (non-giant density +
-            # overloaded prob_27).
-            polish(min(cands, key=lambda c: c[0])[1], seed=3333, repack_every=4)
+            # overloaded prob_27). v15 r2a: the lottery's top runner-up
+            # constructions stay alive as harvest cycle re-seeds.
+            polish(min(cands, key=lambda c: c[0])[1], seed=3333, repack_every=4,
+                   alts=pick_alts(cands))
         elif time.time() < deadline:  # fallback
             try:
                 _, a = build(_area_order(blocks_data) if forced
@@ -3056,7 +4057,8 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                 if time.time() >= cap:
                     break
             if cands:
-                polish(min(cands, key=lambda c: c[0])[1], seed=555)
+                polish(min(cands, key=lambda c: c[0])[1], seed=555,
+                       alts=pick_alts(cands))
         else:
             # Congestion-aware constructions (kills Pass-A first-preferred-wins;
             # pays an anticipatory price for stuffing crowded bays). gamma=0.5
@@ -3080,7 +4082,8 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                 if time.time() >= cap:
                     break
             if cands:
-                polish(min(cands, key=lambda c: c[0])[1], seed=1313)
+                polish(min(cands, key=lambda c: c[0])[1], seed=1313,
+                       alts=pick_alts(cands))
     else:
         # Non-forced instances: v9's thorough congestion+EDD+jitter recipe,
         # seed/order-diversified across workers; W3 adds util_gamma.
@@ -3115,7 +4118,8 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
             except Exception:
                 break
         if cands and time.time() < deadline:
-            polish(min(cands, key=lambda c: c[0])[1], seed=iseed)
+            polish(min(cands, key=lambda c: c[0])[1], seed=iseed,
+                   alts=pick_alts(cands))
 
 
 def _worker_main(wid, prob_info, timelimit, t_start, q, inbox=None):
