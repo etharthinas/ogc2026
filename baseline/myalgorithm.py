@@ -1,6 +1,31 @@
-# myalgorithm_12.py  --  v12 = v11 + RASTER GEOMETRY ENGINE (numpy conservative
-#                        occupancy scan) + TIME-ORDERED DISPATCHER construction
-#                        + CP-SAT retime audit fixes.
+# myalgorithm_13.py  --  v13 = v12 + RASTER-WINDOWED REPAIR (density lever) +
+#                        VOLUME-AWARE TRIAGE (alpha ATC + giant mini-lottery) +
+#                        THROUGHPUT CACHES. See heuristic_13.md.
+# =============================================================================
+# v13. Three additions over v12 (goal: full-40 train < 150M; v12 = 174.59M):
+#  1. RASTER-WINDOWED REPAIR (`_find_earliest_slot_raster` + `_Raster.scan_scoped`).
+#     v12's improver repaired only via AABB-corner candidates -- the 55-72%
+#     inside-bbox density ceiling. v13 gives the worker's raster to the improver:
+#     per candidate entry time it builds a SCOPED occupancy from only the
+#     time-overlapping blocks, full-position scans, ranks feasible cells by
+#     PERIMETER CONTACT (block-footprint dotted with the occupied/wall neighbour
+#     field -- `_order_cells`/`_neighbour_field`), and exact-gates with
+#     _can_place. Concavity-filling placements AABB corners never propose become
+#     reachable. Gated to forced/congested instances. The same contact ordering
+#     upgrades the dispatcher's try_place (score_pos), with an adaptive cand_cap
+#     (12->48 on deep entry queues) killing the 12-cell rejection cliff.
+#  2. VOLUME-AWARE TRIAGE. ATC generalized to priority ~ 1/(a^alpha * p) *
+#     exp(-slack/(kappa*pbar)); alpha=0 reproduces v12 exactly, alpha>0 strands
+#     large-footprint blocks under overload (fluid-SPT). Multiplicative jitter.
+#     Giants (v12: one dispatch) now run a W2 mini-lottery over alpha/kappa;
+#     W3's lottery gains the alpha dimension.
+#  3. THROUGHPUT. Scan cache per (bay,bi,oi,ver), footprint cache per (bay,ver),
+#     exit-time SET (O(1) heap membership), prune exited blocks from the
+#     dispatcher sched, drop fully-vacated occupancy layers -- all
+#     result-transparent, they only multiply builds/rounds. W0 stays byte-exact.
+# =============================================================================
+# v12 = v11 + RASTER GEOMETRY ENGINE (numpy conservative occupancy scan) +
+#       TIME-ORDERED DISPATCHER construction + CP-SAT retime audit fixes.
 # =============================================================================
 # v12 (see heuristic_12.md). Three additions over v11:
 #  1. RASTER ENGINE (`_Raster`). Per (block, orient, layer) a conservative
@@ -453,6 +478,46 @@ def _find_earliest_slot(bay, sched_bay, bi, blk, orients, lb, proc,
     return None
 
 
+def _find_earliest_slot_raster(bay, bay_id, sched_bay, bi, blk, orients, lb, proc,
+                               raster, score_pos=True, time_cap=16, pos_cap=28):
+    """v13 RASTER-WINDOWED REPAIR: earliest feasible (orient,x,y,entry) reached
+    by a full-position raster scan instead of AABB-corner enumeration -- the
+    density lever inside the improver. For each candidate entry time t, build a
+    SCOPED occupancy from ONLY the time-overlapping blocks (does NOT touch the
+    dispatcher's raster.occ), scan every integer anchor, rank feasible cells by
+    perimeter contact, and exact-gate with _can_place. Returns the earliest
+    feasible placement or None."""
+    times = {int(lb)}
+    for it in sched_bay:
+        a, e = it[1], it[2]
+        if e >= lb:
+            times.add(int(e))
+        if a >= lb:
+            times.add(int(a))
+    for t in sorted(times)[:time_cap]:
+        exit_t = t + proc
+        relx = _time_overlap_rel(sched_bay, t, exit_t)
+        actives = [(it0.block_id, it0.orient_idx, it0.x, it0.y)
+                   for (it0, _a, _e) in relx]
+        for oi in orients:
+            if not _orient_fits(blk, oi, bay):
+                continue
+            feas, cx0, cy0, occ_fp = raster.scan_scoped(bay_id, actives, bi, oi)
+            if feas is None or not feas.any():
+                continue
+            cells = _order_cells(raster, feas, cx0, cy0, bi, oi,
+                                 raster.W[bay_id], occ_fp, score_pos, None)
+            tried = 0
+            for (x, y) in cells:
+                nb = _mkblock(bi, blk, x, y, oi)
+                if _can_place(bay, relx, nb, t, exit_t):
+                    return (oi, x, y, t)
+                tried += 1
+                if tried >= pos_cap:
+                    break
+    return None
+
+
 # -----------------------------------------------------------------------------
 # Orderings
 # -----------------------------------------------------------------------------
@@ -586,7 +651,7 @@ def _window_util(sched_bay, entry, exit_t, bay_area):
 def _place_block(bi, blk, bays, sched, bay_loads, bay_u, w1, w2, w3,
                  pos_cap=40, tardy_cap=8, dense=True, forced=False,
                  bay_order=None, slot_time_cap=40, slot_pos_cap=24,
-                 util_gamma=0.0):
+                 util_gamma=0.0, raster=None):
     release = int(blk["release_time"])
     due = int(blk["due_date"])
     proc = int(blk["processing_time"])
@@ -650,8 +715,15 @@ def _place_block(bi, blk, bays, sched, bay_loads, bay_u, w1, w2, w3,
     if dense:
         for bay_id in bay_order:
             bay = bays[bay_id]
-            slot = _find_earliest_slot(bay, sched[bay_id], bi, blk, orients, lb, proc,
-                                       time_cap=slot_time_cap, pos_cap=slot_pos_cap)
+            if raster is not None:
+                slot = _find_earliest_slot_raster(
+                    bay, bay_id, sched[bay_id], bi, blk, orients, lb, proc,
+                    raster, score_pos=True,
+                    time_cap=min(slot_time_cap, 16), pos_cap=slot_pos_cap)
+            else:
+                slot = _find_earliest_slot(bay, sched[bay_id], bi, blk, orients,
+                                           lb, proc, time_cap=slot_time_cap,
+                                           pos_cap=slot_pos_cap)
             if slot is None:
                 continue
             oi, cx, cy, entry = slot
@@ -866,7 +938,7 @@ def _destroy_window(cur, blocks_data, rng):
 
 
 def _improve(prob_info, assignments, bays, bay_u, w1, w2, w3, deadline, forced,
-             seed=4242, sa=False, on_best=None, inbox=None):
+             seed=4242, sa=False, on_best=None, inbox=None, raster=None):
     """Basin-hopping destroy/repair. Tracks `best` separately from the working
     `cur`; returns `best` -> monotone in the RESULT. Diversifies destroy mode and
     repair ordering, and applies an escape "kick" (a larger destroy accepted even
@@ -1001,9 +1073,14 @@ def _improve(prob_info, assignments, bays, bay_u, w1, w2, w3, deadline, forced,
                 ok = False; break
             blk = blocks_data[bi]
             bo = sorted(range(n_bays), key=lambda j: bay_loads[j]) if spread else None
+            # v13: raster-windowed repair (density lever) when the instance is
+            # forced OR the incumbent still has tardiness (schedule/density-
+            # limited mid-tier); zero-tardiness easies keep the cheap AABB
+            # repair (raster costs more per move and buys nothing there).
+            use_raster = raster if (forced or best_tardy > 0) else None
             place = _place_block(bi, blk, bays, sched, bay_loads, bay_u, w1, w2, w3,
                                  forced=forced, slot_time_cap=40, slot_pos_cap=30,
-                                 bay_order=bo)
+                                 bay_order=bo, raster=use_raster)
             if place is None:
                 place = _force_place(bi, blk, bays, sched)
             _add(sched, bay_loads, work, bi, blk, place)
@@ -1349,9 +1426,13 @@ class _Raster:
         self.W = [int(b.width) for b in bays]
         self.H = [int(b.height) for b in bays]
         self._mask = {}                       # (bi, oi) -> (mask, cx0, cy0)
+        self._fpm = {}                        # (bi, oi) -> footprint-union mask
         self.occ = [dict() for _ in bays]     # bay -> {layer: int16 grid (H,W)}
         self.ver = [0 for _ in bays]          # occupancy version per bay
         self._uni = [None for _ in bays]      # bay -> (ver, [union_ge grids])
+        # v13 throughput caches (transparent -- same numeric results as v12):
+        self._scan = [dict() for _ in bays]   # bay -> {(bi,oi): (ver, feas,cx0,cy0)}
+        self._fp = [None for _ in bays]       # bay -> (ver, footprint bool grid)
 
     # -- mask construction -----------------------------------------------------
     def mask(self, bi, oi):
@@ -1388,6 +1469,18 @@ class _Raster:
         self._mask[key] = m
         return m
 
+    def mask_fp(self, bi, oi):
+        """Footprint-union mask (MH,MW) bool = any layer touches the cell.
+        Used by contact scoring; cached per (bi,oi)."""
+        key = (bi, oi)
+        fp = self._fpm.get(key)
+        if fp is not None:
+            return fp
+        mask, cx0, cy0 = self.mask(bi, oi)
+        fp = mask.any(axis=0)
+        self._fpm[key] = fp
+        return fp
+
     # -- occupancy update (int counts so remove() is exact) --------------------
     def _apply(self, bay, bi, oi, x, y, sign):
         mask, cx0, cy0 = self.mask(bi, oi)
@@ -1409,6 +1502,10 @@ class _Raster:
                 occ[l] = g
             g[r0:r1, c0:c1] += sign * mask[l, r0 - r:r1 - r,
                                            c0 - c:c1 - c].astype(_np.int16)
+            # v13: drop a layer once it is fully vacated so _unions/scan loops
+            # shrink to the live maxL (perf on giants; result-transparent).
+            if sign < 0 and not g.any():
+                del occ[l]
         self.ver[bay] += 1
 
     def reset(self):
@@ -1417,6 +1514,8 @@ class _Raster:
             self.occ[j] = dict()
             self.ver[j] += 1
             self._uni[j] = None
+            self._scan[j] = dict()
+            self._fp[j] = None
 
     def add(self, bay, bi, oi, x, y):
         self._apply(bay, bi, oi, x, y, 1)
@@ -1425,12 +1524,17 @@ class _Raster:
         self._apply(bay, bi, oi, x, y, -1)
 
     def footprint(self, bay):
-        """Bool (H,W): any layer occupied (for compactness / util scoring)."""
+        """Bool (H,W): any layer occupied (for compactness / util scoring).
+        Cached per (bay, ver) -- recomputed only when the occupancy changes."""
+        cache = self._fp[bay]
+        if cache is not None and cache[0] == self.ver[bay]:
+            return cache[1]
         occ = self.occ[bay]
         H, W = self.H[bay], self.W[bay]
         fp = _np.zeros((H, W), dtype=bool)
         for g in occ.values():
             fp |= (g > 0)
+        self._fp[bay] = (self.ver[bay], fp)
         return fp
 
     def _unions(self, bay):
@@ -1456,11 +1560,17 @@ class _Raster:
     def scan(self, bay, bi, oi):
         """Boolean (R,C) grid of entry-clear anchor windows against the current
         occupancy, or None if the block cannot fit the bay. Map window (r,c) to
-        an assignment via x = c - cx0, y = r - cy0."""
+        an assignment via x = c - cx0, y = r - cy0.
+        v13: cached per (bay, bi, oi, ver) -- the dispatcher re-scans the same
+        (block,orient) across bays/events with unchanged occupancy constantly."""
+        sc = self._scan[bay].get((bi, oi))
+        if sc is not None and sc[0] == self.ver[bay]:
+            return sc[1], sc[2], sc[3]
         mask, cx0, cy0 = self.mask(bi, oi)
         nl, MH, MW = mask.shape
         H, W = self.H[bay], self.W[bay]
         if MH > H or MW > W:
+            self._scan[bay][(bi, oi)] = (self.ver[bay], None, cx0, cy0)
             return None, cx0, cy0
         R = H - MH + 1; C = W - MW + 1
         unions = self._unions(bay)
@@ -1477,7 +1587,262 @@ class _Raster:
                 continue
             win = _swv(Vk.astype(_np.int32), (MH, MW))     # (R,C,MH,MW)
             total += _np.einsum('rcij,ij->rc', win, mk.astype(_np.int32))
-        return (total == 0), cx0, cy0
+        feas = (total == 0)
+        self._scan[bay][(bi, oi)] = (self.ver[bay], feas, cx0, cy0)
+        return feas, cx0, cy0
+
+    def scan_scoped(self, bay, actives, bi, oi):
+        """v13 raster-windowed repair primitive. Feasible-anchor grid for
+        placing (bi,oi) in `bay` against ONLY `actives` = [(bi2,oi2,x2,y2),...]
+        (the blocks time-overlapping the candidate insertion), WITHOUT touching
+        self.occ. Returns (feas (R,C) bool | None, cx0, cy0, occ_fp (H,W) bool).
+        Sound in exactly the same conservative sense as scan()."""
+        H, W = self.H[bay], self.W[bay]
+        mask, cx0, cy0 = self.mask(bi, oi)
+        nl, MH, MW = mask.shape
+        if MH > H or MW > W:
+            return None, cx0, cy0, None
+        R = H - MH + 1; C = W - MW + 1
+        layers = {}                            # l -> bool (H,W)
+        maxL = -1
+        for (b2, o2, x2, y2) in actives:
+            m2, c2x, c2y = self.mask(b2, o2)
+            nl2, MH2, MW2 = m2.shape
+            r = int(y2) + c2y; c = int(x2) + c2x
+            r0 = max(0, r); c0 = max(0, c)
+            r1 = min(H, r + MH2); c1 = min(W, c + MW2)
+            if r1 <= r0 or c1 <= c0:
+                continue
+            for l in range(nl2):
+                g = layers.get(l)
+                if g is None:
+                    g = _np.zeros((H, W), dtype=bool); layers[l] = g
+                g[r0:r1, c0:c1] |= m2[l, r0 - r:r1 - r, c0 - c:c1 - c].astype(bool)
+            if nl2 - 1 > maxL:
+                maxL = nl2 - 1
+        if maxL < 0:
+            return _np.ones((R, C), dtype=bool), cx0, cy0, \
+                _np.zeros((H, W), dtype=bool)
+        union_ge = [None] * (maxL + 1)
+        cum = _np.zeros((H, W), dtype=bool)
+        for l in range(maxL, -1, -1):
+            g = layers.get(l)
+            if g is not None:
+                cum = cum | g
+            union_ge[l] = cum
+        occ_fp = union_ge[0]                    # footprint of all actives
+        total = _np.zeros((R, C), dtype=_np.int32)
+        for k in range(nl):
+            if k > maxL:
+                break
+            Vk = union_ge[k]
+            if Vk is None or not Vk.any():
+                continue
+            mk = mask[k]
+            if not mk.any():
+                continue
+            win = _swv(Vk.astype(_np.int32), (MH, MW))
+            total += _np.einsum('rcij,ij->rc', win, mk.astype(_np.int32))
+        return (total == 0), cx0, cy0, occ_fp
+
+
+# =============================================================================
+# v13 POSITION-QUALITY ORDERING (contact / perimeter-match scoring)
+# =============================================================================
+
+def _neighbor_field(occ_fp):
+    """4-neighbour count of occupied-or-wall cells for every cell of the bay.
+    Walls are the outside of the grid (borders always count as +1 neighbour).
+    A block cell landing here scores high when it nestles against existing
+    blocks or a wall -> perimeter match -> denser, concavity-filling packings."""
+    H, W = occ_fp.shape
+    N = _np.zeros((H, W), dtype=_np.int32)
+    o = occ_fp.astype(_np.int32)
+    N[1:, :] += o[:-1, :]; N[0, :] += 1        # up  (top border = wall)
+    N[:-1, :] += o[1:, :]; N[-1, :] += 1       # down
+    N[:, 1:] += o[:, :-1]; N[:, 0] += 1        # left
+    N[:, :-1] += o[:, 1:]; N[:, -1] += 1       # right
+    return N
+
+
+def _order_cells(raster, feas, cx0, cy0, bi, oi, W, occ_fp, prefer_contact, rng):
+    """Order feasible raster anchors best-first as a list of (x, y). Default is
+    v12's bottom-left (low y=r, then low x=c). With `prefer_contact` and a
+    non-empty occupancy, rank by perimeter-contact first (block footprint dotted
+    with the neighbour-field), BL as tie-break -- the density lever, shared by
+    the dispatcher and the raster-repair improver. `rng` jitters ties (lottery).
+    When prefer_contact is False and rng is None this reproduces v12 exactly."""
+    rc = _np.argwhere(feas)                     # (K,2) as (r,c)
+    if len(rc) == 0:
+        return []
+    r = rc[:, 0]; c = rc[:, 1]
+    bl = (r * (W + 1) + c).astype(_np.float64)
+    if rng is not None and len(rc) > 1:
+        bl = bl + rng.uniform(0.0, 2.0) * _np.array(
+            [rng.random() for _ in range(len(rc))])
+    if prefer_contact and occ_fp is not None and occ_fp.any():
+        N = _neighbor_field(occ_fp)
+        bfp = raster.mask_fp(bi, oi).astype(_np.int32)
+        MH, MW = bfp.shape
+        win = _swv(N, (MH, MW))                 # (R,C,MH,MW)
+        contact = _np.einsum('rcij,ij->rc', win, bfp)
+        cval = contact[r, c].astype(_np.float64)
+        idx = _np.lexsort((bl, -cval))          # primary -cval (desc), then bl
+    else:
+        idx = _np.argsort(bl)                   # pure BL (== v12 when rng None)
+    return [(int(c[ii]) - cx0, int(r[ii]) - cy0) for ii in idx]
+
+
+# =============================================================================
+# v13 round-3: FLUID-TARGET ADMISSION GATE (structural-overload lever)
+# =============================================================================
+
+def _overload_ratio(prob_info, bays):
+    """Total area*time demand / total capacity*time over the due-date horizon.
+    > 1 means the instance is STRUCTURALLY oversubscribed (no schedule meets
+    all dues even at 100% packing density; measured: prob_38 1.14, prob_27
+    1.19, every other train instance <= 0.94 -> threshold 1.05 isolates the
+    overloaded pair). On such instances alpha-ATC only reorders priority -- a
+    stranded block still gets admitted the moment it fits, consuming the very
+    area the sacrifice was supposed to free; the fix is an explicit
+    target-schedule admission GATE built from _fluid_targets."""
+    cap = sum(b.width * b.height for b in bays)
+    bl = prob_info["blocks"]
+    vol = sum(_min_area(b) * b["processing_time"] for b in bl)
+    rmin = min(b["release_time"] for b in bl)
+    dmax = max(b["due_date"] for b in bl)
+    return vol / max(1e-9, cap * max(1, dmax - rmin))
+
+
+def _fluid_targets(prob_info, bays, c_eff, mode):
+    """Deterministic greedy fluid target schedule. Aggregate-area relaxation:
+    capacity = c_eff * total bay area; blocks are loaded in the discipline
+    order at the earliest t >= release where the aggregate area-in-use step
+    profile stays <= capacity over [t, t+proc). 'spt' = smallest area*proc
+    first (the fluid-SPT sacrifice: the largest space-time volumes are pushed
+    to the back of the horizon instead of every block being democratically
+    late); 'band' = due-date bands (width 4*pbar), smallest area*proc first
+    within a band (keeps rough due order globally, sacrifices within bands).
+    Returns {bi: int target entry time}."""
+    blocks = prob_info["blocks"]
+    n = len(blocks)
+    total_area = sum(b.width * b.height for b in bays)
+    cap = c_eff * total_area
+    areas = [_min_area(b) for b in blocks]
+    procs = [max(1, int(b["processing_time"])) for b in blocks]
+    rels = [int(b["release_time"]) for b in blocks]
+    pbar = max(1.0, sum(procs) / max(1, n))
+    if mode == "cut":
+        # PURE SACRIFICE: pick the smallest set of largest-a*p blocks whose
+        # removal brings total volume under c_eff*area*horizon (here c_eff =
+        # the packing density the un-sacrificed mass realistically achieves);
+        # everyone else keeps target=release (gate inactive, normal ATC), and
+        # ONLY the sacrificed blocks are pushed to the post-burst tail via
+        # earliest-fit against the mass's prompt-release profile.
+        rmin = min(rels)
+        H = max(1, max(b["due_date"] for b in blocks) - rmin)
+        vol = sum(areas[i] * procs[i] for i in range(n))
+        excess = vol - c_eff * total_area * H
+        targets = {i: rels[i] for i in range(n)}
+        if excess <= 0:
+            return targets
+        by_vol = sorted(range(n), key=lambda i: -areas[i] * procs[i])
+        sac = []
+        rem = excess
+        for i in by_vol:
+            if rem <= 0:
+                break
+            sac.append(i)
+            rem -= areas[i] * procs[i]
+        sac_set = set(sac)
+        ev = {}
+        for i in range(n):
+            if i not in sac_set:
+                ev[rels[i]] = ev.get(rels[i], 0.0) + areas[i]
+                t2 = rels[i] + procs[i]
+                ev[t2] = ev.get(t2, 0.0) - areas[i]
+        # earliest-fit the sacrificed blocks (EDD order) at FULL area capacity
+        # (the tail is empty; c_eff was only the burst-mass density model).
+        fullcap = total_area
+        for i in sorted(sac, key=lambda i: blocks[i]["due_date"]):
+            a, p = areas[i], procs[i]
+            t = rels[i]
+            guard = 0
+            while guard < 4000:
+                guard += 1
+                ts = sorted(ev)
+                E = len(ts)
+                run = 0.0
+                idx = 0
+                while idx < E and ts[idx] <= t:
+                    run += ev[ts[idx]]; idx += 1
+                viol = run + a > fullcap + 1e-9
+                while not viol and idx < E and ts[idx] < t + p:
+                    run += ev[ts[idx]]; idx += 1
+                    if run + a > fullcap + 1e-9:
+                        viol = True
+                if not viol:
+                    break
+                nxt = None
+                for tt in ts:
+                    if tt > t and ev[tt] < 0:
+                        nxt = tt
+                        break
+                if nxt is None:
+                    break
+                t = nxt
+            targets[i] = int(t)
+            ev[t] = ev.get(t, 0.0) + a
+            ev[t + p] = ev.get(t + p, 0.0) - a
+        return targets
+    if mode == "band":
+        # band width ~ one mean processing time: coarse enough to allow SPT
+        # sacrifice within a band, fine enough that due order matters globally
+        # (4*pbar measured degenerate: all dues fell into 1-2 bands == SPT).
+        band = max(1.0, pbar)
+        order = sorted(range(n), key=lambda i: (
+            math.floor(blocks[i]["due_date"] / band),
+            areas[i] * procs[i], blocks[i]["due_date"], i))
+    else:
+        order = sorted(range(n), key=lambda i: (
+            areas[i] * procs[i], blocks[i]["due_date"], i))
+    ev = {}                                   # time -> +/- area delta
+    targets = {}
+    for i in order:
+        a, p, r = areas[i], procs[i], rels[i]
+        t = r
+        if a <= cap + 1e-9:
+            guard = 0
+            while guard < 4000:
+                guard += 1
+                ts = sorted(ev)
+                E = len(ts)
+                # usage on the segment covering t = cum deltas at times <= t
+                run = 0.0
+                idx = 0
+                while idx < E and ts[idx] <= t:
+                    run += ev[ts[idx]]; idx += 1
+                viol = run + a > cap + 1e-9
+                # walk the segments starting strictly inside (t, t+p)
+                while not viol and idx < E and ts[idx] < t + p:
+                    run += ev[ts[idx]]; idx += 1
+                    if run + a > cap + 1e-9:
+                        viol = True
+                if not viol:
+                    break
+                # advance to the next exit event (usage only drops there)
+                nxt = None
+                for tt in ts:
+                    if tt > t and ev[tt] < 0:
+                        nxt = tt
+                        break
+                if nxt is None:
+                    break                     # no future relief; accept t
+                t = nxt
+        targets[i] = int(t)
+        ev[t] = ev.get(t, 0.0) + a
+        ev[t + p] = ev.get(t + p, 0.0) - a
+    return targets
 
 
 # =============================================================================
@@ -1485,7 +1850,8 @@ class _Raster:
 # =============================================================================
 
 def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
-                        kappa=1.0, gamma=0.5, rng=None, cand_cap=12):
+                        kappa=1.0, gamma=0.5, rng=None, cand_cap=12,
+                        alpha=0.0, score_pos=False, eps=0.15, targets=None):
     """Event-driven admission construction using the raster full-position scan.
 
     Walk event times (releases + scheduled exits); at each event admit queued
@@ -1504,6 +1870,12 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
     rels = [int(b["release_time"]) for b in blocks_data]
     pbar = max(1.0, sum(procs) / max(1, n))
     orients_of = [_unique_orients(b) for b in blocks_data]
+    # v13 volume-aware triage: normalize min-orient footprint area by the mean
+    # so alpha=0 (a^0=1) reproduces v12's ATC exactly, alpha>0 deliberately
+    # strands large-footprint blocks under overload (fluid-SPT flavour).
+    areas = [_min_area(b) for b in blocks_data]
+    abar = max(1e-9, sum(areas) / max(1, n))
+    anorm = [a / abar for a in areas]
 
     sched = [[] for _ in range(n_bays)]      # bay -> [(blk, entry, exit, bbox)]
     bay_loads = [0.0] * n_bays
@@ -1511,9 +1883,20 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
 
     def atc(bi, t):
         p = procs[bi]
-        slack = dues[bi] - p - t
-        j = rng.uniform(-0.15, 0.15) if rng is not None else 0.0
-        return (1.0 / p) * math.exp(-max(0.0, slack) / (kappa * pbar)) + j
+        if targets is None:
+            slack = dues[bi] - p - t
+        else:
+            # round-3 target mode: urgency keys on the LATER of due-slack
+            # point and the fluid target -- un-sacrificed blocks (target ==
+            # release) keep the exact v12 ATC urgency; sacrificed blocks
+            # (target past due) become maximally urgent AT their target
+            # instead of long before it (they are gated out until then).
+            slack = max(dues[bi] - p, targets[bi]) - t
+        idx = (1.0 / ((anorm[bi] ** alpha) * p)) * \
+            math.exp(-max(0.0, slack) / (kappa * pbar))
+        if rng is not None:
+            idx *= (1.0 + rng.uniform(-eps, eps))   # v13: multiplicative jitter
+        return idx
 
     def bay_score(bi, bay_id, t):
         blk = blocks_data[bi]
@@ -1527,9 +1910,11 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
         s = w3 * (max(prefs) - prefs[bay_id]) + gamma * w1 * util
         return s
 
-    def try_place(bi, t):
+    def try_place(bi, t, cap):
         """Try to admit block bi entering at time t. Returns placement tuple or
-        None."""
+        None. `cap` = max exact _can_place gates per (bay,orient). With
+        score_pos, feasible cells are ranked by perimeter contact (density
+        lever); otherwise pure bottom-left (== v12 when rng is None)."""
         blk = blocks_data[bi]
         p = procs[bi]
         exit_t = t + p
@@ -1537,33 +1922,33 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
         for bay_id in order:
             bay = bays[bay_id]
             rel = _rel_sched_bbox(sched[bay_id], t, exit_t)
+            occ_fp = raster.footprint(bay_id) if score_pos else None
             for oi in orients_of[bi]:
                 if not _orient_fits(blk, oi, bay):
                     continue
-                res = raster.scan(bay_id, bi, oi)
-                feas, cx0, cy0 = res
+                feas, cx0, cy0 = raster.scan(bay_id, bi, oi)
                 if feas is None or not feas.any():
                     continue
-                rc = _np.argwhere(feas)               # (K,2) as (r,c)
-                # bottom-left order: low y (=r) first, then low x (=c)
-                keys = (rc[:, 0] * (raster.W[bay_id] + 1) + rc[:, 1]).astype(_np.float64)
-                if rng is not None and len(rc) > 1:
-                    # lottery: mild jitter breaks the strict BL tie-order so the
-                    # multi-start samples nearby packings.
-                    keys = keys + rng.uniform(0.0, 2.0) * _np.array(
-                        [rng.random() for _ in range(len(rc))])
-                idx = _np.argsort(keys)
+                cells = _order_cells(raster, feas, cx0, cy0, bi, oi,
+                                     raster.W[bay_id], occ_fp, score_pos, rng)
                 tried = 0
-                for ii in idx:
-                    r, c = int(rc[ii, 0]), int(rc[ii, 1])
-                    x = c - cx0; y = r - cy0
+                for (x, y) in cells:
                     nb = _mkblock(bi, blk, x, y, oi)
                     if _can_place(bay, rel, nb, t, exit_t):
                         return (bay_id, x, y, oi, t, exit_t)
                     tried += 1
-                    if tried >= cand_cap:
+                    if tried >= cap:
                         break
         return None
+
+    def cap_for(qlen):
+        # v13 adaptive cand_cap: a deep entry queue means the bay is congested
+        # and the 12-cell cliff wrongly rejects blocks whose 13th cell fits.
+        # Widen the exact-gate budget then (only under the new-scoring bundle so
+        # the alpha=0/score_pos=False path stays byte-identical to v12).
+        if score_pos and qlen >= 20:
+            return min(48, cand_cap * 4)
+        return cand_cap
 
     def commit(bi, place):
         bay_id, x, y, oi, entry, exit_t = place
@@ -1580,22 +1965,33 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
     rel_sorted = sorted(range(n), key=lambda i: rels[i])
     rp = 0
     exits_at = {}                              # time -> [(bay, bi, oi, x, y)]
-    heap = sorted(set(rels))
+    ev_times = set(rels)
+    if targets is not None:
+        ev_times |= {int(v) for v in targets.values()}  # round-3: gate opens
+    heap = sorted(ev_times)
     heapq.heapify(heap)
+    scheduled = set(heap)                       # v13: O(1) heap membership test
     queue = set()
     placed_cnt = 0
     last_t = None
 
     while heap:
         t = heapq.heappop(heap)
+        scheduled.discard(t)
         if t == last_t:
             continue
         last_t = t
-        # 1. process exits at t (free occupancy)
+        # 1. process exits at t (free occupancy) + prune exited blocks from the
+        #    affected bays' sched (they can never matter for entry>=t; keeps the
+        #    _rel_sched_bbox / _can_place scans O(active) on giants).
         ev = exits_at.pop(t, None)
         if ev:
+            touched = set()
             for (bay_id, bi, oi, x, y) in ev:
                 raster.remove(bay_id, bi, oi, x, y)
+                touched.add(bay_id)
+            for bj in touched:
+                sched[bj] = [it for it in sched[bj] if it[2] > t]
         # 2. admit newly released blocks
         while rp < n and rels[rel_sorted[rp]] <= t:
             queue.add(rel_sorted[rp]); rp += 1
@@ -1605,10 +2001,13 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
             break
         # 3. single admission pass in ATC priority order
         ordered = sorted(queue, key=lambda bi: -atc(bi, t))
+        cc = cap_for(len(ordered))
         for bi in ordered:
             if time.time() > deadline:
                 break
-            place = try_place(bi, t)
+            if targets is not None and t < targets[bi]:
+                continue        # round-3 GATE: hold until the fluid target
+            place = try_place(bi, t, cc)
             if place is not None:
                 commit(bi, place)
                 queue.discard(bi)
@@ -1616,8 +2015,9 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
                 et = place[5]
                 exits_at.setdefault(et, []).append(
                     (place[0], bi, place[3], place[1], place[2]))
-                if et not in heap:            # ensure the exit event is visited
+                if et not in scheduled:       # ensure the exit event is visited
                     heapq.heappush(heap, et)
+                    scheduled.add(et)
         # if the queue still holds blocks and no future event will free space,
         # inject a probe event so they get force-placed below.
         if queue and not heap:
@@ -1632,7 +2032,7 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
         # try a raster admission at the block's release (cheap best-effort),
         # else fall back to the guaranteed empty-bay force placement.
         t = rels[bi]
-        place = try_place(bi, t)
+        place = try_place(bi, t, cand_cap)
         if place is None:
             place = _force_place(bi, blk, bays, sched)
         commit(bi, place)
@@ -1651,6 +2051,318 @@ def _rel_sched_bbox(sched_bay, entry, exit_t):
         if a <= exit_t and entry <= e:
             out.append((it[0], a, e))
     return out
+
+
+# -----------------------------------------------------------------------------
+# v13 Z3 (bay-preference) RELOCATION ENDGAME (#3c)
+# -----------------------------------------------------------------------------
+
+def _z3_relocate(prob_info, assign, bays, bay_u, w1, w2, w3, raster, deadline,
+                 pos_cap=16, max_passes=3, time_cap=8):
+    """Preference relocation endgame: for each off-preference block (desc by
+    w3 gain) try moving it to a higher-preference bay -- first at the SAME
+    [entry, exit) interval (tardiness-neutral), then at ALTERNATIVE entry
+    times whose full objective delta (w1*d_tard + w2*d_imbal - w3*gain) is
+    still strictly negative (measured: the same-interval move almost never
+    fits because the preferred bay is full at exactly that interval -- that is
+    WHY the block went off-preference; timing freedom is what unlocks the Z3
+    money). Candidate cells come from the scoped raster scan, exact-gated by
+    _can_place; the delta is computed exactly BEFORE geometry work, so only
+    strictly-improving (t, bay) pairs are ever scanned. Removing a block from
+    its old bay can never invalidate others (strictly fewer obstacles).
+    Returns (new_assign, new_obj) or (None, None)."""
+    blocks_data = prob_info["blocks"]
+    n_bays = len(bays)
+    if n_bays < 2 or raster is None or not _HAVE_NUMPY:
+        return None, None
+    cur = {bi: dict(a) for bi, a in assign.items()}
+    sched, bay_loads = _rebuild_sched(cur, blocks_data, n_bays)
+
+    def imbal(loads):
+        return math.floor(max(
+            abs(bay_u[p] * loads[p] - bay_u[q] * loads[q])
+            for p in range(n_bays) for q in range(n_bays) if p != q))
+
+    moved_any = False
+    for _pass in range(max_passes):
+        cand = []
+        for bi, a in cur.items():
+            prefs = blocks_data[bi]["bay_preferences"]
+            gain = max(prefs) - prefs[a["bay_id"]]
+            if gain > 0:
+                cand.append((gain, bi))
+        if not cand:
+            break
+        cand.sort(reverse=True)
+        pass_moved = False
+        for _, bi in cand:
+            if time.time() > deadline:
+                break
+            a = cur[bi]
+            blk = blocks_data[bi]
+            prefs = blk["bay_preferences"]
+            entry, exit_t = a["entry_time"], a["exit_time"]
+            proc = exit_t - entry
+            due = int(blk["due_date"])
+            rel_t = int(blk["release_time"])
+            cur_tard = max(0, exit_t - due)
+            cb = a["bay_id"]
+            wl = blk["workload"]
+            im0 = imbal(bay_loads)
+            orients = [oi for oi in _unique_orients(blk)]
+            done = False
+            for tj in sorted((j for j in range(n_bays) if prefs[j] > prefs[cb]),
+                             key=lambda j: -prefs[j]):
+                loads2 = list(bay_loads)
+                loads2[cb] -= wl; loads2[tj] += wl
+                # budget = the strict-improvement room left for added tardiness
+                budget = (w3 * (prefs[tj] - prefs[cb])
+                          - w2 * (imbal(loads2) - im0))
+                if budget <= 1e-9:
+                    continue                 # move can't pay for itself
+                bay = bays[tj]
+                if not any(_orient_fits(blk, oi, bay) for oi in orients):
+                    continue
+                # candidate entry times: same interval first, then bay-event
+                # times whose tardiness delta still fits within the budget.
+                t_hi = due - proc + cur_tard + int(budget / max(w1, 1e-9))
+                cands_t = {entry}
+                alap = due - proc
+                if rel_t <= alap:
+                    cands_t.add(alap); cands_t.add(rel_t)
+                for it2 in sched[tj]:
+                    a2, e2 = it2[1], it2[2]
+                    for tt in (int(e2), int(a2) - proc):
+                        if rel_t <= tt <= t_hi:
+                            cands_t.add(tt)
+
+                def dtard(t):
+                    return max(0, t + proc - due) - cur_tard
+
+                # same-interval first; then least added tardiness, LATEST first
+                # within a tardiness tier (bays drain over time -- late slots
+                # near ALAP are where free space actually exists; mirrors
+                # _zero_candidates' reverse order).
+                times = sorted(cands_t, key=lambda t: (t != entry, dtard(t), -t))
+                for t in times[:time_cap]:
+                    dobj = w1 * dtard(t) - budget
+                    if dobj >= -1e-9:
+                        continue
+                    e_new = t + proc
+                    relx = _time_overlap_rel(sched[tj], t, e_new)
+                    actives = [(b.block_id, b.orient_idx, b.x, b.y)
+                               for b, _a2, _e2 in relx]
+                    for oi in orients:
+                        if not _orient_fits(blk, oi, bay):
+                            continue
+                        feas, cx0, cy0, occ_fp = raster.scan_scoped(
+                            tj, actives, bi, oi)
+                        if feas is None or not feas.any():
+                            continue
+                        cells = _order_cells(raster, feas, cx0, cy0, bi, oi,
+                                             raster.W[tj], occ_fp, True, None)
+                        tried = 0
+                        for (x, y) in cells:
+                            nb = _mkblock(bi, blk, x, y, oi)
+                            if _can_place(bay, relx, nb, t, e_new):
+                                # commit: strict internal-objective improvement
+                                sched[cb] = [it for it in sched[cb]
+                                             if it[0].block_id != bi]
+                                sched[tj].append((nb, t, e_new,
+                                                  nb.bounding_rect()))
+                                bay_loads[cb] -= wl; bay_loads[tj] += wl
+                                a["bay_id"] = tj
+                                a["x"] = int(x); a["y"] = int(y)
+                                a["orient_idx"] = oi
+                                a["entry_time"] = int(t)
+                                a["exit_time"] = int(e_new)
+                                pass_moved = True; moved_any = True
+                                done = True
+                                break
+                            tried += 1
+                            if tried >= pos_cap:
+                                break
+                        if done:
+                            break
+                    if done or time.time() > deadline:
+                        break
+                if done:
+                    break                    # next block
+        if not pass_moved or time.time() > deadline:
+            break
+    if not moved_any:
+        return None, None
+    o = _objective(cur, blocks_data, bays, bay_u, w1, w2, w3)[0]
+    return cur, o
+
+
+# -----------------------------------------------------------------------------
+# v13 #3b: CP-SAT time-WINDOW decomposition for giant bays
+# -----------------------------------------------------------------------------
+
+def _cpsat_retime_window(bay, blocks_data, ids, new_assign, t_end,
+                         cap_pairs=4000, chunk0=55):
+    """Windowed retime for a bay whose full pair count exceeds the CP-SAT cap
+    (v12 silently no-opped there). Retimes one time-window CHUNK of blocks at a
+    time: chunk blocks are variables constrained inside [T0, T1] (their current
+    span) against each other with the EXACT var-var encoding of the full model,
+    and against every temporally-overlapping non-chunk block as FIXED constants
+    (same crane tie rules, entry times substituted). Variables cannot leave
+    [T0, T1], so no unmodeled interaction is possible. Chunks are processed
+    most-tardy-first until the deadline; each accepted window strictly reduces
+    its own tardiness. Mutates new_assign in place; returns True if improved."""
+    from ortools.sat.python import cp_model
+    improved = False
+
+    def tard(bi):
+        return max(0, new_assign[bi]["exit_time"] - blocks_data[bi]["due_date"])
+
+    ids_sorted = sorted(ids, key=lambda bi: new_assign[bi]["entry_time"])
+    chunks = [ids_sorted[i:i + chunk0] for i in range(0, len(ids_sorted), chunk0)]
+    chunks.sort(key=lambda ch: -sum(tard(bi) for bi in ch))
+    for ch in chunks:
+        if time.time() >= t_end - 1.5:
+            break
+        if sum(tard(bi) for bi in ch) <= 0:
+            continue
+
+        def bounds(c):
+            """[T0e, T1]: the chunk's span EXTENDED LEFT by its own width --
+            tardiness wins come from pulling blocks earlier into idle gaps
+            before the chunk, which a same-span window cannot express."""
+            t0 = min(new_assign[bi]["entry_time"] for bi in c)
+            t1 = max(new_assign[bi]["exit_time"] for bi in c)
+            return max(0, t0 - max(1, t1 - t0)), t1
+
+        def fixed_of(c, T0, T1):
+            cs = set(c)
+            return [bi for bi in ids if bi not in cs
+                    and new_assign[bi]["entry_time"] <= T1
+                    and new_assign[bi]["exit_time"] >= T0]
+
+        T0, T1 = bounds(ch)
+        fixed = fixed_of(ch, T0, T1)
+        while (len(ch) > 12 and
+               len(ch) * (len(ch) - 1) // 2 + len(ch) * len(fixed)
+               > int(cap_pairs * 1.5)):
+            ch = ch[:max(12, int(len(ch) * 0.7))]
+            T0, T1 = bounds(ch)
+            fixed = fixed_of(ch, T0, T1)
+        before = sum(tard(bi) for bi in ch)
+        if before <= 0:
+            continue
+        blks = {bi: _mkblock(bi, blocks_data[bi], new_assign[bi]["x"],
+                             new_assign[bi]["y"], new_assign[bi]["orient_idx"])
+                for bi in list(ch) + fixed}
+        m = cp_model.CpModel()
+        E, P = {}, {}
+        terms = {}
+        for bi in ch:
+            blk = blocks_data[bi]
+            P[bi] = int(blk["processing_time"])
+            lo = max(int(blk["release_time"]), int(T0))
+            hi = int(T1) - P[bi]
+            e0 = int(new_assign[bi]["entry_time"])
+            lo = min(lo, e0); hi = max(hi, e0)    # domain always contains hint
+            E[bi] = m.NewIntVar(lo, hi, f"e{bi}")
+            m.AddHint(E[bi], e0)
+            T = m.NewIntVar(0, int(T1) + 10, f"t{bi}")
+            m.Add(T >= E[bi] + P[bi] - int(blk["due_date"]))
+            terms[bi] = T
+
+        def outside_vv(i, off_i, j, tie_bad):
+            b1, b2 = m.NewBoolVar(""), m.NewBoolVar("")
+            m.Add(E[i] + off_i <= E[j] - (1 if tie_bad == "left" else 0)
+                  ).OnlyEnforceIf(b1)
+            m.Add(E[i] + off_i >= E[j] + P[j] + (1 if tie_bad == "right" else 0)
+                  ).OnlyEnforceIf(b2)
+            m.AddBoolOr([b1, b2])
+
+        def outside_vf(i, off_i, lo_c, hi_c, tie_left, tie_right):
+            """E[i]+off_i outside (lo_c, hi_c) with optional boundary bans."""
+            b1, b2 = m.NewBoolVar(""), m.NewBoolVar("")
+            m.Add(E[i] + off_i <= lo_c - (1 if tie_left else 0)).OnlyEnforceIf(b1)
+            m.Add(E[i] + off_i >= hi_c + (1 if tie_right else 0)).OnlyEnforceIf(b2)
+            m.AddBoolOr([b1, b2])
+
+        abort = False
+        chl = list(ch)
+        for u in range(len(chl)):
+            if (u & 15) == 0 and time.time() >= t_end - 0.8:
+                abort = True
+                break
+            i = chl[u]
+            A = blks[i]
+            # -- var-var (exact mirror of the full model) ------------------
+            for v in range(u + 1, len(chl)):
+                j = chl[v]
+                B = blks[j]
+                if not _bb_overlap(A.bounding_rect(), B.bounding_rect()):
+                    continue
+                if _collide(bay, A, B):
+                    b1, b2 = m.NewBoolVar(""), m.NewBoolVar("")
+                    m.Add(E[i] + P[i] <= E[j]).OnlyEnforceIf(b1)
+                    m.Add(E[j] + P[j] <= E[i]).OnlyEnforceIf(b2)
+                    m.AddBoolOr([b1, b2])
+                    continue
+                if _entry_blocked(bay, B, A):
+                    outside_vv(i, 0, j, "left" if j < i else "none")
+                if _exit_blocked(bay, B, A):
+                    outside_vv(i, P[i], j, "right" if j > i else "none")
+                if _entry_blocked(bay, A, B):
+                    outside_vv(j, 0, i, "left" if i < j else "none")
+                if _exit_blocked(bay, A, B):
+                    outside_vv(j, P[j], i, "right" if i > j else "none")
+            # -- var-fixed (fixed entry times as constants) ----------------
+            for j in fixed:
+                B = blks[j]
+                if not _bb_overlap(A.bounding_rect(), B.bounding_rect()):
+                    continue
+                aj = int(new_assign[j]["entry_time"])
+                ej = int(new_assign[j]["exit_time"])
+                if _collide(bay, A, B):
+                    # disjoint intervals: exit_i <= aj OR E_i >= ej
+                    outside_vf(i, P[i], aj, ej + P[i], False, False)
+                    continue
+                # j (fixed) obstructs i's entry/exit moments:
+                if _entry_blocked(bay, B, A):
+                    outside_vf(i, 0, aj, ej, j < i, False)
+                if _exit_blocked(bay, B, A):
+                    outside_vf(i, P[i], aj, ej, False, j > i)
+                # i (variable) obstructs j's fixed entry moment aj / exit ej:
+                # aj outside (E_i, E_i+P_i): E_i >= aj (+1 if i<j) OR exit_i<=aj
+                if _entry_blocked(bay, A, B):
+                    b1, b2 = m.NewBoolVar(""), m.NewBoolVar("")
+                    m.Add(E[i] >= aj + (1 if i < j else 0)).OnlyEnforceIf(b1)
+                    m.Add(E[i] + P[i] <= aj).OnlyEnforceIf(b2)
+                    m.AddBoolOr([b1, b2])
+                if _exit_blocked(bay, A, B):
+                    b1, b2 = m.NewBoolVar(""), m.NewBoolVar("")
+                    m.Add(E[i] >= ej).OnlyEnforceIf(b1)
+                    m.Add(E[i] + P[i] <= ej - (1 if i > j else 0)).OnlyEnforceIf(b2)
+                    m.AddBoolOr([b1, b2])
+        if abort:
+            break
+        m.Minimize(sum(terms.values()))
+        rem2 = min(5.0, t_end - time.time() - 0.3)
+        if rem2 < 0.5:
+            break
+        solver = cp_model.CpSolver()
+        solver.parameters.max_time_in_seconds = rem2
+        solver.parameters.num_search_workers = 1
+        try:
+            status = solver.Solve(m)
+        except Exception:
+            continue
+        if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            after = sum(int(solver.Value(t)) for t in terms.values())
+            if after < before:
+                for bi in ch:
+                    e = int(solver.Value(E[bi]))
+                    new_assign[bi]["entry_time"] = e
+                    new_assign[bi]["exit_time"] = e + P[bi]
+                improved = True
+    return improved
 
 
 # -----------------------------------------------------------------------------
@@ -1688,9 +2400,15 @@ def _cpsat_retime(prob_info, assign, bays, blocks_data, budget_s, hard_deadline)
             continue
         # v12 fix: pair-count cap. The pairwise build is O(m^2) Shapely/cache
         # queries; a bay with hundreds of blocks can blow the whole window on
-        # model construction alone. Skip such bays (the improver already handles
-        # them; CP-SAT's win is on the small schedule-limited bays).
+        # model construction alone. v13 #3b: such giant bays now get the
+        # time-WINDOW decomposition (chunked exact retime) instead of a no-op.
         if len(ids) * (len(ids) - 1) // 2 > 4000:
+            try:
+                if _cpsat_retime_window(bays[bj], blocks_data, ids,
+                                        new_assign, t_end):
+                    improved = True
+            except Exception:
+                pass
             continue
         remaining = t_end - time.time()
         if remaining < 1.5:
@@ -1817,31 +2535,52 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
         push(o, a)
         return o, a
 
+    # v13: raster engine (shared masks). Every non-anchor worker gets one: the
+    # dispatcher workers (W2/W3) use its occupancy for construction, and ALL
+    # forced workers (incl. W1) use its scoped scan for raster-windowed repair
+    # inside the improver. W0 stays byte-exact v9 and never touches a raster.
+    raster = _Raster(prob_info, bays) if (_HAVE_NUMPY and wid != 0) else None
+
     def improve(assign, seed, until=None):
         dl = deadline if until is None else min(until, deadline)
         r, o = _improve(prob_info, assign, bays, bay_u, w1, w2, w3,
-                        dl, forced, seed=seed, on_best=push, inbox=inbox)
+                        dl, forced, seed=seed, on_best=push, inbox=inbox,
+                        raster=raster)
         push(o, r, force=True)
         return o, r
 
-    # v12: raster engine (shared masks, occupancy reset per dispatch). Only the
-    # dispatcher workers (W2/W3) build it; raster=None disables the dispatcher
-    # (numpy missing) and those workers fall through to the v11 recipe below.
-    raster = _Raster(prob_info, bays) if (_HAVE_NUMPY and wid in (2, 3)) else None
+    # round-3: structural-overload detection + fluid-target cache. targets are
+    # deterministic per (c_eff, mode), so compute each grid point once.
+    overload = _overload_ratio(prob_info, bays)
+    _tgt_cache = {}
 
-    def dispatch(kappa, gamma, drng=None):
+    def fluid_tgt(spec):
+        if spec is None:
+            return None
+        tg = _tgt_cache.get(spec)
+        if tg is None:
+            tg = _fluid_targets(prob_info, bays, spec[0], spec[1])
+            _tgt_cache[spec] = tg
+        return tg
+
+    def dispatch(kappa, gamma, drng=None, alpha=0.0, score_pos=True,
+                 tspec=None):
         raster.reset()
         a = _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline,
-                                raster, kappa=kappa, gamma=gamma, rng=drng)
+                                raster, kappa=kappa, gamma=gamma, rng=drng,
+                                alpha=alpha, score_pos=score_pos,
+                                targets=fluid_tgt(tspec))
         o = iobj(a)
         push(o, a)
         return o, a
 
     def polish(assign, seed):
-        """improve -> CP-SAT exact time-repair -> improve the winner. The CP
-        pass fires at a hard-latest 62% of the window (or immediately when the
-        improver converges early == a stall gate) so the improver both feeds it
-        a good geometry and gets time to exploit the re-timed schedule after."""
+        """improve -> CP-SAT exact time-repair -> improve the winner -> Z3
+        relocation endgame. The CP pass fires at a hard-latest 62% of the
+        window (or immediately when the improver converges early == a stall
+        gate) so the improver both feeds it a good geometry and gets time to
+        exploit the re-timed schedule after. v13: the tail reserves a small
+        slice for the tardiness-neutral preference-relocation pass (#3c)."""
         cp_at = t_start + 0.62 * window
         o1, r1 = improve(assign, seed, until=cp_at)
         try:
@@ -1855,8 +2594,20 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
             push(oc, rc, force=True)
             if oc < ob:
                 base, ob = rc, oc
-        if time.time() < deadline - 2.0:
-            improve(base, seed + 1)
+        z3_at = deadline - (min(12.0, 0.05 * window) if raster is not None
+                            else 0.0)
+        if time.time() < z3_at - 2.0:
+            o2, r2 = improve(base, seed + 1, until=z3_at)
+            if o2 < ob:
+                base, ob = r2, o2
+        if raster is not None and time.time() < deadline - 0.5:
+            try:
+                rz, oz = _z3_relocate(prob_info, base, bays, bay_u,
+                                      w1, w2, w3, raster, deadline)
+                if rz is not None and oz < ob - 1e-9:
+                    push(oz, rz, force=True)
+            except Exception:
+                pass
 
     if wid == 0:
         # W0 = EXACT v9 replica (same rng streams, same two-pass improver).
@@ -1868,15 +2619,44 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
         _v9_search(prob_info, timelimit - 2.5, t_start, push=push)
         return
 
-    # -- W2 = time-ordered dispatcher (default kappa) -> improver -------------
+    # -- W2 = dispatcher + volume-aware mini-lottery -> improver --------------
     if wid == 2 and raster is not None:
-        a = None
-        try:
-            _, a = dispatch(1.0, 0.5)
-        except Exception:
-            a = None
-        if a is not None:
-            polish(a, seed=2222)
+        cands = []
+        if forced:
+            # v13 giant/forced mini-lottery: rotate alpha (volume triage) x kappa
+            # before polish. In v12 giants got exactly ONE dispatch here; raster
+            # builds are cheap enough to sample the fluid-SPT basin (alpha>0).
+            plan = [(0.0, 1.0, None), (0.5, 1.0, None),
+                    (1.0, 1.0, None), (0.5, 2.0, None)]
+            cap = t_start + 0.45 * window
+            if overload > 1.05:
+                # round-3: structurally oversubscribed (prob_38/27 regime) ->
+                # add fluid-target ADMISSION-GATED dispatches. NOTE the honest
+                # probe result: at the construction level EVERY gate variant
+                # (spt/band loaders, pure-cut sacrifice; C in 0.5..1.1)
+                # realized WORSE than the ungated dispatcher on both 38 and 27
+                # (realization penalty ~13-22M dwarfs the fluid-SPT saving);
+                # only the 3 closest variants are kept as cheap lottery
+                # tickets (~1-5s each) in case the improver flips one, with
+                # the plain entries first so best-of always protects.
+                plan = [(0.0, 1.0, None), (0.5, 1.0, None),
+                        (0.0, 1.0, (0.80, "cut")), (0.0, 1.0, (1.10, "spt")),
+                        (0.0, 1.0, (0.70, "cut")),
+                        (1.0, 1.0, None), (0.5, 2.0, None)]
+            for al, ka, ts_ in plan:
+                try:
+                    cands.append(dispatch(ka, 0.5, alpha=al, tspec=ts_))
+                except Exception:
+                    break
+                if time.time() >= cap:
+                    break
+        else:
+            try:
+                cands.append(dispatch(1.0, 0.5))
+            except Exception:
+                pass
+        if cands:
+            polish(min(cands, key=lambda c: c[0])[1], seed=2222)
         else:  # dispatcher failed -> safe v11-style construction + improve
             try:
                 _, a = build(_area_order(blocks_data) if forced
@@ -1891,15 +2671,24 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
         drng = random.Random(9099)
         cands = []
         cap = t_start + 0.5 * window
-        # rotate ATC kappa in {0.5,1,2,4} crossed with bay-spread gamma variants
-        plan = [(0.5, 0.5), (1.0, 0.5), (2.0, 0.5), (4.0, 0.5),
-                (1.0, 2.0), (2.0, 0.0), (0.5, 1.0), (4.0, 0.0)]
+        # v13: rotate ATC kappa x bay-spread gamma x volume-triage alpha.
+        plan = [(0.5, 0.5, 0.0, None), (1.0, 0.5, 0.5, None),
+                (2.0, 0.5, 1.0, None), (4.0, 0.5, 0.0, None),
+                (1.0, 2.0, 0.5, None), (2.0, 0.0, 1.0, None),
+                (0.5, 1.0, 0.0, None), (4.0, 0.0, 0.5, None)]
+        if overload > 1.05:
+            # round-3: overloaded non-giant (prob_27 regime, nw=4) -> W3 mixes
+            # in jittered target-gated dispatches (the jitter samples around
+            # the gate; see W2 note -- construction-level probe says the gate
+            # loses, these are cheap lottery tickets only).
+            plan = [(1.0, 0.5, 0.0, (0.80, "cut")),
+                    (2.0, 0.5, 0.0, (1.10, "spt"))] + plan
         gi = 0
         while True:
-            kap, gam = plan[gi % len(plan)]
+            kap, gam, al, ts_ = plan[gi % len(plan)]
             gi += 1
             try:
-                cands.append(dispatch(kap, gam, drng))
+                cands.append(dispatch(kap, gam, drng, alpha=al, tspec=ts_))
             except Exception:
                 break
             if time.time() >= cap or gi > 60:
@@ -2124,6 +2913,22 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
                   fallback))
     cands.sort(key=lambda c: c[0])
     hard_stop = t_start + timelimit - 1.0
+    # v13 #3c: parent-side Z3 relocation on the winning candidate. Workers run
+    # the pass inside polish, but a W0 (v9-replica) win never sees it -- this
+    # catches that case. Cheap (~seconds, obj-gated); the relocated candidate
+    # goes FIRST in the verify order and the original stays next in line, so a
+    # failed official check costs one verify, never correctness.
+    if _HAVE_NUMPY and cands and cands[0][0] < float("inf"):
+        try:
+            z_dl = min(hard_stop - 2.0, time.time() + 5.0)
+            if z_dl > time.time() + 1.0:
+                rz, oz = _z3_relocate(prob_info, cands[0][1], bays, bay_u,
+                                      w1, w2, w3, _Raster(prob_info, bays),
+                                      z_dl)
+                if rz is not None and oz < cands[0][0] - 1e-9:
+                    cands.insert(0, (oz, rz))
+        except Exception:
+            pass
     if _dbg:
         _el = time.time() - t_start
         _objs = sorted(c[0] for c in cands)[:5]

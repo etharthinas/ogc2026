@@ -233,3 +233,15 @@ realization penalty IS the lever -- burst-window packing density (deeper
 geometric search during the backlog: e.g. multi-position lookahead per
 admission event, or re-packing the standing queue's bay jointly) rather than
 WHO gets admitted WHEN.
+
+## FINAL RESULT (results.csv row `algorithm 13 (4w 300s)`)
+**Full-40 @300s = 155,491,916, 40/40 feasible — new SOTA, −19,095,847
+(−10.9%) vs v12's 174,587,763.** myalgorithm.py promoted to v13.
+Biggest movers vs v12: prob_38 −3.61M, prob_27 −2.73M, prob_30 −1.71M,
+prob_31 −1.33M (full-bench lottery: 11.55M vs focus 11.29M), prob_26 −1.32M,
+prob_39 −1.32M, prob_33 −1.13M, prob_37 −0.94M, prob_28 −0.88M, prob_21
+−0.85M, prob_23 −0.76M, prob_24 −0.51M, prob_34 −0.48M, prob_32 −0.45M,
+prob_35 −0.34M, plus every easy instance (1-20 all improved or equal,
+all obj1=0, prob_22 reaches obj1=0). No regressions vs v12 anywhere.
+Progression: v10 289.1M -> v12 174.6M -> **v13 155.5M**. Goal <150M: 5.5M
+remaining — v14 (joint window repack + admission beam) targets it.
