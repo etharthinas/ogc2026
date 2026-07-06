@@ -87,3 +87,104 @@ Need −24.6M overall; plan headroom ~2x that.
   the zero-tardiness easies); (4) full-40 bench_row @300s quiet machine.
 
 ## Results (filled after testing)
+
+Implemented in baseline/myalgorithm_13.py (from v12). W0 byte-exact anchor
+untouched. Correctness: dispatcher byte-reproduces v12 at alpha=0/score_pos off
+(0/250 diffs, prob_39); scan_scoped sound (0/1503 exact-check violations);
+every reported solution passes the parent's official check_feasibility
+(stage=5). Peak python RSS on prob_38 (3 workers) = 2.83 GB. Env: .venv_ogc,
+serial @300s, quiet machine.
+
+Focus-6 @300s (v12 -> v13, obj):
+| prob | v12         | v13         | delta       |
+|------|-------------|-------------|-------------|
+|  38  | 49,420,035  | 45,806,839  | -3,613,196  |
+|  27  | 31,929,802  | 29,198,468  | -2,731,334  |
+|  39  | 15,300,889  | 13,979,218  | -1,321,671  |
+|  31  | 12,880,039  | 11,305,550  | -1,574,489  |
+|  26  | 12,689,104  | 11,368,821  | -1,320,283  |
+|  33  | 11,055,920  |  9,921,419  | -1,134,501  |
+|total | 133,283,789 | 121,580,315 | -11,703,474 |
+-8.78% overall. GATE (<112M) NOT met -- short by 9.58M.
+
+Smoke @60s: prob_26 13,148,749 -> 11,471,802 (-12.8%); prob_39 15,300,889 ->
+13,979,218 (-8.6%). (v12 prob_39 @60 == @300: v12 was frozen at the AABB
+density ceiling; v13 raster repair breaks it -- direct evidence of lever #1.)
+
+Regression @300s (easies, all Z1=0 preserved -> NO tardiness regression; all
+IMPROVED via the dispatcher's contact-scoring on w3):
+| prob | v12     | v13     |
+|------|---------|---------|
+|  1   | 64,891  | 27,969  |
+|  5   | 105,279 | 97,253  |
+|  20  | 209,325 | 198,806 |
+
+Lever attribution (analytic, from Z-splits -- per-worker winner logging NOT
+instrumented): #1 raster repair drove the Z1 (density) drops everywhere,
+starkest on prob_39 (v12 frozen -> -1.3M) and prob_31 (Z1 10.09M -> 8.55M,
+-15%). #2 volume-aware alpha triage + giant W2 mini-lottery drove the giant
+Z1 wins (38 -3.6M, 27 -2.7M). #1's contact scoring in the dispatcher drove the
+easy-instance Z3 wins (prob_1 Z3 64.8k -> 26.8k). #3a throughput caches gave
+~5% faster dispatcher builds (byte-repro run 5.5 -> 5.2s), feeding more
+rounds/builds everywhere.
+
+## Round 2 (coordinator follow-up): #3c + wider repair gate + #3b
+
+Added in the same file: (1) `_z3_relocate` -- preference-relocation endgame,
+run at the tail of every polish AND parent-side on the winning candidate;
+generalized beyond tardiness-neutral: same-interval move first, then
+alternative entry times gated by the EXACT objective delta
+(w1*d_tard + w2*d_imbal - w3*gain < 0), candidate times latest-first within a
+tardiness tier (bays drain over time). (2) Raster-repair gate widened from
+forced-only to forced OR best_tardy > 0 (zero-tardiness easies keep AABB
+repair). (3) `_cpsat_retime_window` -- CP-SAT time-window decomposition for
+bays over the 4000-pair cap: chunks of <=55 blocks by entry time, variables
+confined to a LEFT-EXTENDED window, temporally-overlapping outsiders as fixed
+constants with exact crane-tie encodings, most-tardy chunks first.
+
+Micro-validation: relocated prob_31 solution passes official check (stage=5),
+obj1 invariant on the same-interval path; windowed CP-SAT model solves without
+error on prob_39/38 giant bays (var-fixed encodings verified against the
+_present_at_entry/_present_at_exit tie rules).
+
+Focus-6 @300s FINAL (serial, quiet):
+| prob | v12         | v13 final   | delta       |
+|------|-------------|-------------|-------------|
+|  38  | 49,420,035  | 45,806,839  | -3,613,196  |
+|  27  | 31,929,802  | 29,198,468  | -2,731,334  |
+|  39  | 15,300,889  | 13,978,536  | -1,322,353  |
+|  31  | 12,880,039  | 11,293,179  | -1,586,860  |
+|  26  | 12,689,104  | 11,367,852  | -1,321,252  |
+|  33  | 11,055,920  |  9,921,419  | -1,134,501  |
+|total | 133,283,789 | 121,566,293 | -11,717,496 |
+GATE (<112M) NOT met; also above the ~115M projection bar. Round-2 passes
+added only -14k on focus-6.
+
+Mid-tier @300s (the wider-gate + endgame targets -- BIG wins):
+| prob | v12       | v13       | delta    |
+|------|-----------|-----------|----------|
+|  23  | 4,584,164 | 3,819,621 | -16.7%   |
+|  35  | 2,347,358 | 2,011,342 | -14.3%   |
+Easies: prob_1 @60s = 18,357 (v12 @300s: 64,891; Z1=0 kept) -- the Z3
+relocation pass works where free space exists.
+
+HONEST NEGATIVE RESULTS (measured, not speculation):
+* The "8.5M recoverable Z3" hypothesis is FALSE on the forced/congested
+  instances: preferred bays are space-saturated across the entire usable
+  horizon (that is WHY blocks went off-preference), and w1 >> w3-per-block
+  (budget/w1 ~ 1 tardiness unit) leaves no timing room. Measured: prob_31
+  -12k of 2.74M, prob_38/27/33 zero moves. The Z3 money on forced instances
+  is structural, not endgame-recoverable by single-block relocation.
+* CP-SAT retime (full AND windowed) finds ZERO improvement on the giants'
+  post-improver schedules (prob_38: 30s budget, 3.3k raw tardy units, no
+  window improved) -- with geometry fixed and prompt exits the dispatcher/
+  improver schedules are already retime-tight. #3b stays (harmless, budget-
+  bounded, may fire on other instances) but is not a giant lever.
+
+Full-40 projection: measured deltas sum to ~-12.9M on the 9 measured
+instances; if the unmeasured mid-tier tardy instances (21/28/30/32/37/22...)
+improve like 23/35 (-14..17%), full-40 lands ~157-160M -- under v12's 174.6M
+but likely ABOVE the 150M goal. The residual is prob_38/27's structural
+overload (75M together vs fluid-SPT bound ~29M+22M): closing THAT needs a
+tardiness-aware triage that abandons whole blocks' due dates strategically
+(fluid-SPT basin), not more geometry.
