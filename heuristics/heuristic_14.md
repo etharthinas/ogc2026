@@ -90,3 +90,9 @@ same as v13's own prob_31 run-to-run spread). Focus-6 118,500,027 (gate
 - v15 residual ideas: cross-bay joint repack (windows currently single-bay),
   window-width lottery, seed-diversity harvesting of the ±250k-400k lottery
   spread (prob_35 draws 1.35M vs 1.75M).
+
+## FINAL RESULT (results.csv row `algorithm 14 (4w 300s)`)
+**Full-40 @300s = 151,705,714, 40/40 feasible — new SOTA, −3,786,202
+(−2.4%) vs v13's 155,491,916.** myalgorithm.py promoted to v14.
+Progression: v12 174.6M -> v13 155.5M -> **v14 151.7M**. Goal <150M: 1.71M
+remaining — v15 (cross-bay repack + basin harvest) targets it.
