@@ -11,5 +11,6 @@ ITERATE:
 2. EXECUTE: incorporate those changes into a next myalgorithm_x.py
 3. TEST: run the algorithm against the training sets and figure out the losses.
 4. RECORD: record the numbers and your analysis of failure to results.csv and heuristic_x.md.
+5. STORE: commit and push to github. if SOTA, overwrite myalgorithm.py with a self-contained version as well.
 
 ITERATE until goal is met.

@@ -18,6 +18,12 @@ sys.path.insert(0, HERE)
 
 from utils import check_feasibility  # noqa: E402
 
+try:  # keep Windows awake for the whole run (sleep mid-run corrupts results)
+    import ctypes
+    ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000001)
+except Exception:
+    pass
+
 
 def run(mod_name, timelimit, indices):
     mod = importlib.import_module(mod_name)

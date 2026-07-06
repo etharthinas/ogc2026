@@ -5,6 +5,11 @@ import sys, os, json, time, importlib
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from utils import check_feasibility
+try:  # keep Windows awake for the whole run (sleep mid-run corrupts results)
+    import ctypes
+    ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000001)
+except Exception:
+    pass
 
 def one(mod, prob, tl):
     t0 = time.time()
