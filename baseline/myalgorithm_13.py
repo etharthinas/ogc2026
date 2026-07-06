@@ -1694,12 +1694,164 @@ def _order_cells(raster, feas, cx0, cy0, bi, oi, W, occ_fp, prefer_contact, rng)
 
 
 # =============================================================================
+# v13 round-3: FLUID-TARGET ADMISSION GATE (structural-overload lever)
+# =============================================================================
+
+def _overload_ratio(prob_info, bays):
+    """Total area*time demand / total capacity*time over the due-date horizon.
+    > 1 means the instance is STRUCTURALLY oversubscribed (no schedule meets
+    all dues even at 100% packing density; measured: prob_38 1.14, prob_27
+    1.19, every other train instance <= 0.94 -> threshold 1.05 isolates the
+    overloaded pair). On such instances alpha-ATC only reorders priority -- a
+    stranded block still gets admitted the moment it fits, consuming the very
+    area the sacrifice was supposed to free; the fix is an explicit
+    target-schedule admission GATE built from _fluid_targets."""
+    cap = sum(b.width * b.height for b in bays)
+    bl = prob_info["blocks"]
+    vol = sum(_min_area(b) * b["processing_time"] for b in bl)
+    rmin = min(b["release_time"] for b in bl)
+    dmax = max(b["due_date"] for b in bl)
+    return vol / max(1e-9, cap * max(1, dmax - rmin))
+
+
+def _fluid_targets(prob_info, bays, c_eff, mode):
+    """Deterministic greedy fluid target schedule. Aggregate-area relaxation:
+    capacity = c_eff * total bay area; blocks are loaded in the discipline
+    order at the earliest t >= release where the aggregate area-in-use step
+    profile stays <= capacity over [t, t+proc). 'spt' = smallest area*proc
+    first (the fluid-SPT sacrifice: the largest space-time volumes are pushed
+    to the back of the horizon instead of every block being democratically
+    late); 'band' = due-date bands (width 4*pbar), smallest area*proc first
+    within a band (keeps rough due order globally, sacrifices within bands).
+    Returns {bi: int target entry time}."""
+    blocks = prob_info["blocks"]
+    n = len(blocks)
+    total_area = sum(b.width * b.height for b in bays)
+    cap = c_eff * total_area
+    areas = [_min_area(b) for b in blocks]
+    procs = [max(1, int(b["processing_time"])) for b in blocks]
+    rels = [int(b["release_time"]) for b in blocks]
+    pbar = max(1.0, sum(procs) / max(1, n))
+    if mode == "cut":
+        # PURE SACRIFICE: pick the smallest set of largest-a*p blocks whose
+        # removal brings total volume under c_eff*area*horizon (here c_eff =
+        # the packing density the un-sacrificed mass realistically achieves);
+        # everyone else keeps target=release (gate inactive, normal ATC), and
+        # ONLY the sacrificed blocks are pushed to the post-burst tail via
+        # earliest-fit against the mass's prompt-release profile.
+        rmin = min(rels)
+        H = max(1, max(b["due_date"] for b in blocks) - rmin)
+        vol = sum(areas[i] * procs[i] for i in range(n))
+        excess = vol - c_eff * total_area * H
+        targets = {i: rels[i] for i in range(n)}
+        if excess <= 0:
+            return targets
+        by_vol = sorted(range(n), key=lambda i: -areas[i] * procs[i])
+        sac = []
+        rem = excess
+        for i in by_vol:
+            if rem <= 0:
+                break
+            sac.append(i)
+            rem -= areas[i] * procs[i]
+        sac_set = set(sac)
+        ev = {}
+        for i in range(n):
+            if i not in sac_set:
+                ev[rels[i]] = ev.get(rels[i], 0.0) + areas[i]
+                t2 = rels[i] + procs[i]
+                ev[t2] = ev.get(t2, 0.0) - areas[i]
+        # earliest-fit the sacrificed blocks (EDD order) at FULL area capacity
+        # (the tail is empty; c_eff was only the burst-mass density model).
+        fullcap = total_area
+        for i in sorted(sac, key=lambda i: blocks[i]["due_date"]):
+            a, p = areas[i], procs[i]
+            t = rels[i]
+            guard = 0
+            while guard < 4000:
+                guard += 1
+                ts = sorted(ev)
+                E = len(ts)
+                run = 0.0
+                idx = 0
+                while idx < E and ts[idx] <= t:
+                    run += ev[ts[idx]]; idx += 1
+                viol = run + a > fullcap + 1e-9
+                while not viol and idx < E and ts[idx] < t + p:
+                    run += ev[ts[idx]]; idx += 1
+                    if run + a > fullcap + 1e-9:
+                        viol = True
+                if not viol:
+                    break
+                nxt = None
+                for tt in ts:
+                    if tt > t and ev[tt] < 0:
+                        nxt = tt
+                        break
+                if nxt is None:
+                    break
+                t = nxt
+            targets[i] = int(t)
+            ev[t] = ev.get(t, 0.0) + a
+            ev[t + p] = ev.get(t + p, 0.0) - a
+        return targets
+    if mode == "band":
+        # band width ~ one mean processing time: coarse enough to allow SPT
+        # sacrifice within a band, fine enough that due order matters globally
+        # (4*pbar measured degenerate: all dues fell into 1-2 bands == SPT).
+        band = max(1.0, pbar)
+        order = sorted(range(n), key=lambda i: (
+            math.floor(blocks[i]["due_date"] / band),
+            areas[i] * procs[i], blocks[i]["due_date"], i))
+    else:
+        order = sorted(range(n), key=lambda i: (
+            areas[i] * procs[i], blocks[i]["due_date"], i))
+    ev = {}                                   # time -> +/- area delta
+    targets = {}
+    for i in order:
+        a, p, r = areas[i], procs[i], rels[i]
+        t = r
+        if a <= cap + 1e-9:
+            guard = 0
+            while guard < 4000:
+                guard += 1
+                ts = sorted(ev)
+                E = len(ts)
+                # usage on the segment covering t = cum deltas at times <= t
+                run = 0.0
+                idx = 0
+                while idx < E and ts[idx] <= t:
+                    run += ev[ts[idx]]; idx += 1
+                viol = run + a > cap + 1e-9
+                # walk the segments starting strictly inside (t, t+p)
+                while not viol and idx < E and ts[idx] < t + p:
+                    run += ev[ts[idx]]; idx += 1
+                    if run + a > cap + 1e-9:
+                        viol = True
+                if not viol:
+                    break
+                # advance to the next exit event (usage only drops there)
+                nxt = None
+                for tt in ts:
+                    if tt > t and ev[tt] < 0:
+                        nxt = tt
+                        break
+                if nxt is None:
+                    break                     # no future relief; accept t
+                t = nxt
+        targets[i] = int(t)
+        ev[t] = ev.get(t, 0.0) + a
+        ev[t + p] = ev.get(t + p, 0.0) - a
+    return targets
+
+
+# =============================================================================
 # v12 TIME-ORDERED DISPATCHER CONSTRUCTION ("the pump")
 # =============================================================================
 
 def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
                         kappa=1.0, gamma=0.5, rng=None, cand_cap=12,
-                        alpha=0.0, score_pos=False, eps=0.15):
+                        alpha=0.0, score_pos=False, eps=0.15, targets=None):
     """Event-driven admission construction using the raster full-position scan.
 
     Walk event times (releases + scheduled exits); at each event admit queued
@@ -1731,7 +1883,15 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
 
     def atc(bi, t):
         p = procs[bi]
-        slack = dues[bi] - p - t
+        if targets is None:
+            slack = dues[bi] - p - t
+        else:
+            # round-3 target mode: urgency keys on the LATER of due-slack
+            # point and the fluid target -- un-sacrificed blocks (target ==
+            # release) keep the exact v12 ATC urgency; sacrificed blocks
+            # (target past due) become maximally urgent AT their target
+            # instead of long before it (they are gated out until then).
+            slack = max(dues[bi] - p, targets[bi]) - t
         idx = (1.0 / ((anorm[bi] ** alpha) * p)) * \
             math.exp(-max(0.0, slack) / (kappa * pbar))
         if rng is not None:
@@ -1805,7 +1965,10 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
     rel_sorted = sorted(range(n), key=lambda i: rels[i])
     rp = 0
     exits_at = {}                              # time -> [(bay, bi, oi, x, y)]
-    heap = sorted(set(rels))
+    ev_times = set(rels)
+    if targets is not None:
+        ev_times |= {int(v) for v in targets.values()}  # round-3: gate opens
+    heap = sorted(ev_times)
     heapq.heapify(heap)
     scheduled = set(heap)                       # v13: O(1) heap membership test
     queue = set()
@@ -1842,6 +2005,8 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
         for bi in ordered:
             if time.time() > deadline:
                 break
+            if targets is not None and t < targets[bi]:
+                continue        # round-3 GATE: hold until the fluid target
             place = try_place(bi, t, cc)
             if place is not None:
                 commit(bi, place)
@@ -2384,11 +2549,27 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
         push(o, r, force=True)
         return o, r
 
-    def dispatch(kappa, gamma, drng=None, alpha=0.0, score_pos=True):
+    # round-3: structural-overload detection + fluid-target cache. targets are
+    # deterministic per (c_eff, mode), so compute each grid point once.
+    overload = _overload_ratio(prob_info, bays)
+    _tgt_cache = {}
+
+    def fluid_tgt(spec):
+        if spec is None:
+            return None
+        tg = _tgt_cache.get(spec)
+        if tg is None:
+            tg = _fluid_targets(prob_info, bays, spec[0], spec[1])
+            _tgt_cache[spec] = tg
+        return tg
+
+    def dispatch(kappa, gamma, drng=None, alpha=0.0, score_pos=True,
+                 tspec=None):
         raster.reset()
         a = _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline,
                                 raster, kappa=kappa, gamma=gamma, rng=drng,
-                                alpha=alpha, score_pos=score_pos)
+                                alpha=alpha, score_pos=score_pos,
+                                targets=fluid_tgt(tspec))
         o = iobj(a)
         push(o, a)
         return o, a
@@ -2445,11 +2626,26 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
             # v13 giant/forced mini-lottery: rotate alpha (volume triage) x kappa
             # before polish. In v12 giants got exactly ONE dispatch here; raster
             # builds are cheap enough to sample the fluid-SPT basin (alpha>0).
-            plan = [(0.0, 1.0), (0.5, 1.0), (1.0, 1.0), (0.5, 2.0)]
+            plan = [(0.0, 1.0, None), (0.5, 1.0, None),
+                    (1.0, 1.0, None), (0.5, 2.0, None)]
             cap = t_start + 0.45 * window
-            for al, ka in plan:
+            if overload > 1.05:
+                # round-3: structurally oversubscribed (prob_38/27 regime) ->
+                # add fluid-target ADMISSION-GATED dispatches. NOTE the honest
+                # probe result: at the construction level EVERY gate variant
+                # (spt/band loaders, pure-cut sacrifice; C in 0.5..1.1)
+                # realized WORSE than the ungated dispatcher on both 38 and 27
+                # (realization penalty ~13-22M dwarfs the fluid-SPT saving);
+                # only the 3 closest variants are kept as cheap lottery
+                # tickets (~1-5s each) in case the improver flips one, with
+                # the plain entries first so best-of always protects.
+                plan = [(0.0, 1.0, None), (0.5, 1.0, None),
+                        (0.0, 1.0, (0.80, "cut")), (0.0, 1.0, (1.10, "spt")),
+                        (0.0, 1.0, (0.70, "cut")),
+                        (1.0, 1.0, None), (0.5, 2.0, None)]
+            for al, ka, ts_ in plan:
                 try:
-                    cands.append(dispatch(ka, 0.5, alpha=al))
+                    cands.append(dispatch(ka, 0.5, alpha=al, tspec=ts_))
                 except Exception:
                     break
                 if time.time() >= cap:
@@ -2476,14 +2672,23 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
         cands = []
         cap = t_start + 0.5 * window
         # v13: rotate ATC kappa x bay-spread gamma x volume-triage alpha.
-        plan = [(0.5, 0.5, 0.0), (1.0, 0.5, 0.5), (2.0, 0.5, 1.0), (4.0, 0.5, 0.0),
-                (1.0, 2.0, 0.5), (2.0, 0.0, 1.0), (0.5, 1.0, 0.0), (4.0, 0.0, 0.5)]
+        plan = [(0.5, 0.5, 0.0, None), (1.0, 0.5, 0.5, None),
+                (2.0, 0.5, 1.0, None), (4.0, 0.5, 0.0, None),
+                (1.0, 2.0, 0.5, None), (2.0, 0.0, 1.0, None),
+                (0.5, 1.0, 0.0, None), (4.0, 0.0, 0.5, None)]
+        if overload > 1.05:
+            # round-3: overloaded non-giant (prob_27 regime, nw=4) -> W3 mixes
+            # in jittered target-gated dispatches (the jitter samples around
+            # the gate; see W2 note -- construction-level probe says the gate
+            # loses, these are cheap lottery tickets only).
+            plan = [(1.0, 0.5, 0.0, (0.80, "cut")),
+                    (2.0, 0.5, 0.0, (1.10, "spt"))] + plan
         gi = 0
         while True:
-            kap, gam, al = plan[gi % len(plan)]
+            kap, gam, al, ts_ = plan[gi % len(plan)]
             gi += 1
             try:
-                cands.append(dispatch(kap, gam, drng, alpha=al))
+                cands.append(dispatch(kap, gam, drng, alpha=al, tspec=ts_))
             except Exception:
                 break
             if time.time() >= cap or gi > 60:

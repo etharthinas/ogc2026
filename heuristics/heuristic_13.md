@@ -188,3 +188,48 @@ but likely ABOVE the 150M goal. The residual is prob_38/27's structural
 overload (75M together vs fluid-SPT bound ~29M+22M): closing THAT needs a
 tardiness-aware triage that abandons whole blocks' due dates strategically
 (fluid-SPT basin), not more geometry.
+
+## Round 3: fluid-target admission gate (structural-overload lever) — NEGATIVE
+
+Implemented in full: `_overload_ratio` (area*time demand / capacity*time over
+the due horizon; prob_38=1.14, prob_27=1.19, all other train <=0.94 ->
+threshold 1.05 isolates the pair), `_fluid_targets` (deterministic greedy
+step-profile loader; disciplines: 'spt' small-a*p-first, 'band' due-banded
+SPT, 'cut' pure sacrifice = hold back only the largest-a*p volume excess and
+earliest-fit it into the post-burst tail), dispatcher `targets` param (event
+seeding, admission gate `t < target -> skip`, ATC urgency keyed on
+max(due-slack-point, target) so un-sacrificed blocks keep exact v12 urgency).
+Byte-repro invariant preserved (targets=None: 0/250 diffs vs v12).
+
+Construction-level probe (kappa=1, gamma=0.5, alpha=0, deterministic; realized
+= internal obj of the raw dispatch):
+
+prob_27 (plain 29.20M): spt C=0.60/0.66/0.72 -> 56.7/49.6/44.0M; spt C=1.00/
+1.10 -> 34.3/30.6M; band C=1.10 -> 33.6M; cut C=0.50..0.80 -> 34.6..30.5M.
+prob_38 (plain 45.86M): spt C=0.66 -> 53.1M ... cut C=0.80 -> 46.6M; best
+gated variant 46.6M. EVERY gate variant loses to plain on BOTH instances;
+monotone in C with plain as the limit.
+
+Why the diagnostic bounds (38: 28.8M @C=0.66, 27: 19.2M @C=0.62) don't
+realize: (a) the non-preemptive greedy loader is ~40% tighter than the
+preemptive fluid bound at equal C (my C=1.00 fluid Z1 = 30.0M/20.7M ~= the
+reference bounds); (b) the realization penalty on top of ANY target schedule
+is a stable ~13-22M: holding the big blocks back does NOT let the masses run
+on time -- they still queue on fragmentation + crane blocking, so the
+schedule pays the sacrifice AND most of the original queue. The ungated
+"everyone slightly late" equilibrium dominates every "few very late + masses
+on time" schedule we could realize.
+
+Wiring kept (cheap lottery tickets, best-of-protected): W2 forced plan on
+overload>1.05 adds (0.80,cut)/(1.10,spt)/(0.70,cut) after the plain entries;
+W3 prepends 2 jittered gated entries. Bench @300s serial (3.9GB free RAM,
+quiet): prob_38 = 45,806,839, prob_27 = 29,198,468 -- BYTE-IDENTICAL to
+round-2 (gated candidates never won best-of; no regression, no gain).
+
+Coordinator target (pair <= ~68M) NOT met: pair stays 75.0M. Verdict: the
+overload residual is not reachable by admission-order/timing levers over
+fixed one-shot geometry. What the evidence points at instead: the ~15M
+realization penalty IS the lever -- burst-window packing density (deeper
+geometric search during the backlog: e.g. multi-position lookahead per
+admission event, or re-packing the standing queue's bay jointly) rather than
+WHO gets admitted WHEN.
