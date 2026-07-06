@@ -58,3 +58,29 @@ Total −2 to −4M from ~152M ⇒ 148-150M. Tight but reachable.
   once; (5) prob_1 @60s byte-check; (6) full-40 bench_row @300s.
 
 ## Results (filled after testing)
+
+## Results (validation @300s vs v14 full-bench row)
+Units PASS (xbay officially feasible + real bay moves; features-off
+byte-repro exact vs v14). Round 1: prob_35 1,346,898 (−406k — good draw
+banked); 31/33/30/34/26/39 byte-flat; 38 +53k slip from envelope shift;
+prob_1 exact. Round 2 (harvest re-seeded from runner-up CONSTRUCTIONS via
+pick_alts; giants reverted to exact v14 envelope; xbay Z3-targeted):
+38 restored to 45,806,839 exact; 31/37/33 STILL byte-flat; 35 kept.
+Net vs v14: −406,058. Projected full-40 ≈ 151.3M.
+
+## Analysis — two measured-dead hypotheses, one live insight
+1. **The "lottery noise band" was code-version variance, not run variance.**
+   Within one version, per-instance draws are nearly deterministic (byte-flat
+   reproductions everywhere, even from distinct construction seeds). Harvest
+   (both improve-seed and construction-seed variants) is measured-dead as a
+   lever. prob_35's −406k was a one-off code-shift capture.
+2. **xbay / Z3 recovery is dead on the Z3-heavy pair (31/37):** preferred
+   bays are space-saturated across the horizon; no window/bay-choice scheme
+   found a single accepted move. Sixth dead family on the saturated set.
+3. **Live insight for v16:** on prob_38/39 (giant gate) and prob_27, the W0
+   v9-replica anchor core produces ~2x-worse candidates that can never win
+   (94.3M/29.8M/52.4M-class vs current 45.8/12.4/29.2M) — a full CPU core
+   of provably wasted compute on the three instances holding 87.4M (58% of
+   total). Reclaiming it for productive streams is the largest untried lever.
+   Feasibility safety is unaffected (parent insurance build + empty-bay
+   fallback + official verify remain).
