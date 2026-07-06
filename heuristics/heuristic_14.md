@@ -65,3 +65,28 @@ tardy set echoes. Needed vs projection: ~−8 to −10M ⇒ gates below.
   (4) mid-tier spot 23/35/30/37; (5) full-40 bench_row @300s.
 
 ## Results (filled after testing)
+
+## Results (validation ladder @300s vs v13 full-bench row)
+prob_39 12,375,057 (−1.60M, −11.5%), prob_26 9,653,490 (−1.71M, −15.1%),
+prob_23 3,390,436 (−0.43M), prob_35 1,752,956 (−0.26M, beam lottery; draws
+seen 1.35M/1.75M), prob_31 −25k; flat: 38, 27, 37, prob_1 @60s byte-exact
+(18,357) after beam gate fix (`forced or overload > 0.44` — prob_1 +11k
+regression traced to beam tickets shifting W3's lottery rotation on easies).
+Noise-band residuals: 33 +277k, 34 +95k, 30 +82k, 28 +14k (band ≈ ±250k,
+same as v13's own prob_31 run-to-run spread). Focus-6 118,500,027 (gate
+<110M missed). Net measured −3.56M over 12 instances ⇒ full-40 projection
+≈ 151.9M.
+
+## Analysis
+- Joint window repack delivers exactly where diagnosed: density-pure
+  instances (39/26/23). Multi-order admission beam wins as a lottery on
+  tardy non-forced instances (35).
+- The overloaded pair 38/27 is now MEASURED-SATURATED across four lever
+  families (alpha-ATC, CP-SAT retime incl. windowed, fluid-target gating,
+  joint repack + beam + nw=4 specialist): all byte-flat. Their ~75M is
+  structural at current geometry-search power.
+- Giant nw=4 repack specialist: zero measured value on train, RSS-safe
+  (2.99GB/4w), kept as obj-gated free option.
+- v15 residual ideas: cross-bay joint repack (windows currently single-bay),
+  window-width lottery, seed-diversity harvesting of the ±250k-400k lottery
+  spread (prob_35 draws 1.35M vs 1.75M).
