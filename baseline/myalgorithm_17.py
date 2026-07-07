@@ -1,44 +1,4 @@
-# myalgorithm_18.py  --  v18 = v17 + exact-pack WINDOW shots aimed at the
-#                        GLOBAL BEST (whole-bay model measured-dead and
-#                        retired to provenance). See heuristic_18.md.
-# =============================================================================
-# v18 AS-MEASURED NOTE: the planned WHOLE-BAY escalation (`_exact_pack_bay`)
-# is implemented but NOT WIRED: five configurations on both gate targets
-# (prob_39/26) solved FEASIBLE-at-hint with millions of branches and zero
-# yield at 45-90s budgets -- exact neighborhoods only pay when SMALL and
-# DENSE (v17's destroyed-window). The dedicated late phase instead fires the
-# PROVEN v17 window mechanism at the GLOBAL BEST (island-inbox adopted),
-# fixing v17's placement error (sound accepts on losing worker incumbents).
-# =============================================================================
-# v18. Escalation of v17's proven-sound exact-pack mechanism (goal < 150M;
-# v17 ~= 150.70M). v17 measured: officially-feasible -26.7k accepts with zero
-# soundness failures, but D=14/K=12 windows on WORKER incumbents never beat
-# the portfolio best. Two fixes:
-#  1. WHOLE-BAY EXACT MODEL (`_exact_pack_bay`). Every block of the target bay
-#     is in the model: the ~20 most valuable movers (w1*tard + w3*offpref) get
-#     K~8 raster-feasible alternative placements (empty-bay scan, contact-
-#     ordered vs temporal neighbours + stride spatial diversity; off-pref
-#     movers also get up to 3 candidates in their most-preferred FOREIGN bay,
-#     var-fixed constrained against that bay's schedule); every other block
-#     keeps its current placement as its only candidate (K=1; K1xK1 pair
-#     relations come from the incumbent geometry caches, so the pairwise
-#     blowup stays bounded). ALL bay blocks get free integer entry times
-#     (joint replace + retime, v13-audited CP-SAT encodings; two-tier
-#     mask-prefilter + exact-geometry relations and the exact _can_place
-#     validation carry over from v17 verbatim). Objective: w1*tardiness of the
-#     bay + w3*preference of chosen candidates (scaled ints). 45-90s solves,
-#     1-2 worst bays per instance.
-#  2. AIM AT THE GLOBAL BEST, LATE (`whole_bay_phase`). The phase runs in the
-#     last ~35% of the window in the RECLAIMED W0 stream (giants/27) and the
-#     W0 v13-clone slot (forced non-giants), AFTER draining the island inbox
-#     for the global-best incumbent -- fixing v17's placement error (sound
-#     accepts on weak worker incumbents never mattered). W0 now receives an
-#     inbox (the v9-replica path never touches it -> byte-exact); adoption
-#     inside the W0-clone/reclaimed improves is min-wins-safe. Non-forced
-#     paths, W1/W2/W3, and all banked v17 draws are byte-untouched; the
-#     parent-side micro-pass is SKIPPED (reserve ~10-15s << one 45s solve).
-# =============================================================================
-# v17 = v16 + v13 BASIN RESTORATION + EXACT PACKING
+# myalgorithm_17.py  --  v17 = v16 + v13 BASIN RESTORATION + EXACT PACKING
 #                        WINDOWS (CP-SAT candidate-menu matheuristic).
 #                        See heuristic_17.md.
 # =============================================================================
@@ -1827,405 +1787,6 @@ def _exact_pack_window(prob_info, src, bays, bay_u, w1, w2, w3, raster, rng,
     return work
 
 
-# -----------------------------------------------------------------------------
-# v18 WHOLE-BAY EXACT PACKING (heuristic_18 #1). Joint replace+retime of one
-# entire bay: movers get placement menus, everyone gets a free entry time.
-# -----------------------------------------------------------------------------
-
-def _exact_pack_bay(prob_info, src, bays, bay_u, w1, w2, w3, raster, rng,
-                    deadline, forced=False, budget_s=60.0, bay_rank=0,
-                    n_movers=20, K=8, pair_cap=20000, allow_xbay=True):
-    """Whole-bay exact model. Every block currently in the target bay is a
-    model variable: `n_movers` movers (highest w1*tard + w3*offpref) get up to
-    K raster-feasible alternative placements (+ their original, always last);
-    all other blocks keep their original placement as the ONLY candidate
-    (K=1 -- their pairwise relations are the incumbent's, already sitting in
-    the exact-geometry caches). ALL bay blocks get a free integer entry time
-    in [release, H]: the model is a joint replace + retime (v13-audited CP-SAT
-    encodings via the v17 two-tier relation machinery). Off-pref movers may
-    also get up to 3 candidates in their most-preferred foreign bay (var-fixed
-    constrained against that bay's UNCHANGED schedule; migrations relieve the
-    home bay and pay/earn the w3 term). `bay_rank` selects the bay by
-    descending w1*tardiness + w3*offpref mass (0 = worst). The solved
-    configuration is exact-validated with _can_place per final bay before
-    being returned; the caller obj-gates with the FULL objective (w2 load
-    shifts from migration included). Returns a NEW complete assignment dict or
-    None. Never mutates `src`."""
-    try:
-        from ortools.sat.python import cp_model
-    except Exception:
-        return None
-    if raster is None or not _HAVE_NUMPY:
-        return None
-    import os as _osx
-    _dbg = _osx.environ.get("OGC_XPACK_DEBUG")
-
-    def dlog(msg):
-        if _dbg:
-            print(f"[xbaymodel] {msg}", flush=True)
-
-    t_end = min(deadline, time.time() + budget_s)
-    if time.time() >= t_end - 10.0:
-        return None
-    blocks_data = prob_info["blocks"]
-    n_bays = len(bays)
-    n = len(blocks_data)
-    dues = [int(b["due_date"]) for b in blocks_data]
-    rels_ = [int(b["release_time"]) for b in blocks_data]
-    procs = [int(b["processing_time"]) for b in blocks_data]
-    prefs_of = [b["bay_preferences"] for b in blocks_data]
-    prefmax = [max(p) for p in prefs_of]
-    pbar = max(1.0, sum(procs) / max(1, n))
-    sched, _loads = _rebuild_sched(src, blocks_data, n_bays)
-
-    # -- target bay by descending objective mass --------------------------------
-    def bay_mass(j):
-        s = 0.0
-        for (blk, e, ex, bb) in sched[j]:
-            bi = blk.block_id
-            s += (w1 * max(0, ex - dues[bi])
-                  + w3 * (prefmax[bi] - prefs_of[bi][j]))
-        return s
-    order_b = sorted(range(n_bays), key=lambda j: -bay_mass(j))
-    if bay_rank >= len(order_b):
-        return None
-    bj = order_b[bay_rank]
-    if bay_mass(bj) <= 0:
-        return None
-    bay = bays[bj]
-    ids = [it[0].block_id for it in sched[bj]]
-    if len(ids) < 2:
-        return None
-
-    # -- horizon and mover selection --------------------------------------------
-    max_exit = max(a["exit_time"] for a in src.values())
-    H = int(max(max_exit, max(dues)) + 4 * pbar) + 10
-
-    def mover_value(bi):
-        a = src[bi]
-        return (w1 * max(0, a["exit_time"] - dues[bi])
-                + w3 * (prefmax[bi] - prefs_of[bi][bj]))
-    # v18 r2: movers are a CLUSTERED congestion-window set (v14-repack-style),
-    # not the global top-by-value -- value-scattered movers across the horizon
-    # cannot jointly rearrange (measured on prob_39: 4M branches, zero yield);
-    # a window cluster is where joint placement freedom pays (the proven v17
-    # window mechanism, here with whole-bay retime flex around it).
-    win_w = max(1, int(2 * pbar))
-    centers = set()
-    for (blk, e, ex, bb) in sched[bj]:
-        bi = blk.block_id
-        if ex > dues[bi] or e > rels_[bi]:
-            centers.add(int(e))
-    movers = []
-    if centers:
-        cands_w = []
-        for c in centers:
-            lo, hi = c, c + win_w
-            sc_ = 0.0
-            for (blk, e, ex, bb) in sched[bj]:
-                ov = min(hi, ex) - max(lo, e)
-                if ov > 0:
-                    sc_ += ov + w1 * max(0, ex - dues[blk.block_id])
-            cands_w.append((sc_, lo, hi))
-        cands_w.sort(key=lambda z: -z[0])
-        pick = (cands_w[rng.randrange(min(8, len(cands_w)))]
-                if rng is not None else cands_w[0])
-        _, lo, hi = pick
-        movers = [it[0].block_id for it in sched[bj]
-                  if it[1] < hi and it[2] > lo]
-        if len(movers) > n_movers:
-            movers.sort(key=lambda bi: -mover_value(bi))
-            movers = movers[:n_movers]
-    if len(movers) < 2:
-        by_val = sorted(ids, key=lambda bi: -mover_value(bi))
-        movers = [bi for bi in by_val[:n_movers] if mover_value(bi) > 0]
-    mover_set = set(movers)
-
-    # -- candidate menus ---------------------------------------------------------
-    def build_menus(n_mov, k_alt):
-        mset = set(movers[:n_mov])
-        menus_d = {}
-        for bi in ids:
-            a0 = src[bi]
-            menu = []
-            if bi in mset and time.time() < t_end - 8.0:
-                blk = blocks_data[bi]
-                # candidate spots = cells free of the NON-MOVER blocks around
-                # the mover's window (the movers lift out JOINTLY -- scanning
-                # against other movers blockaded every useful spot and left
-                # the solver hint-locked; measured on prob_39: 82k branches,
-                # zero movement). +-2*pbar slack matches the non-mover retime
-                # domains.
-                w_lo = a0["entry_time"] - 2 * pbar
-                w_hi = a0["exit_time"] + 2 * pbar
-                acts_t = [(it[0].block_id, it[0].orient_idx, it[0].x, it[0].y)
-                          for it in sched[bj]
-                          if it[0].block_id != bi
-                          and it[0].block_id not in mset
-                          and it[1] < w_hi and it[2] > w_lo]
-                for oi in _unique_orients(blk):
-                    if not _orient_fits(blk, oi, bay):
-                        continue
-                    feas, cx0, cy0, occ_fp = raster.scan_scoped(
-                        bj, acts_t, bi, oi)
-                    if feas is None:
-                        continue
-                    if not feas.any():
-                        # bay full during its window: fall back to ALL anchors
-                        feas, cx0, cy0, occ_fp = raster.scan_scoped(
-                            bj, [], bi, oi)
-                        if feas is None or not feas.any():
-                            continue
-                    cells = _order_cells(raster, feas, cx0, cy0, bi, oi,
-                                         raster.W[bj], occ_fp, True, None)
-                    half = max(1, k_alt // 2)
-                    picked = cells[:half]
-                    restc = cells[half:]
-                    if restc:
-                        stride = max(1, len(restc) // max(1, k_alt - half))
-                        picked = picked + restc[::stride][:k_alt - half]
-                    for (x, y) in picked:
-                        menu.append((bj, oi, x, y))
-                        if len(menu) >= k_alt:
-                            break
-                    if len(menu) >= k_alt:
-                        break
-                # foreign-bay candidates for off-pref movers (Z3 recovery)
-                offg = prefmax[bi] - prefs_of[bi][bj]
-                if allow_xbay and offg > 0 and n_bays >= 2:
-                    tj = max((j for j in range(n_bays) if j != bj),
-                             key=lambda j: prefs_of[bi][j])
-                    if prefs_of[bi][tj] > prefs_of[bi][bj]:
-                        tbay = bays[tj]
-                        acts_f = [(it[0].block_id, it[0].orient_idx,
-                                   it[0].x, it[0].y)
-                                  for it in sched[tj]
-                                  if it[1] < a0["exit_time"]
-                                  and it[2] > a0["entry_time"]]
-                        for oi in _unique_orients(blk):
-                            if not _orient_fits(blk, oi, tbay):
-                                continue
-                            feas, cx0, cy0, occ_fp = raster.scan_scoped(
-                                tj, acts_f, bi, oi)
-                            if feas is None or not feas.any():
-                                continue
-                            cells = _order_cells(raster, feas, cx0, cy0, bi,
-                                                 oi, raster.W[tj], occ_fp,
-                                                 True, None)
-                            for (x, y) in cells[:3]:
-                                menu.append((tj, oi, x, y))
-                            break
-            menu.append((bj, a0["orient_idx"], a0["x"], a0["y"]))  # original
-            menus_d[bi] = menu
-        return menus_d
-
-    # -- relation collection (two-tier exact; cross pairs same-bay only) --------
-    def collect(menus_d):
-        out = []
-        cnt = 0
-        idl = ids
-        for u in range(len(idl)):
-            for v_ in range(u + 1, len(idl)):
-                i, j = idl[u], idl[v_]
-                for pi, (b1, oi1, x1, y1) in enumerate(menus_d[i]):
-                    for pj, (b2, oi2, x2, y2) in enumerate(menus_d[j]):
-                        if b1 != b2:
-                            continue      # different bays never interact
-                        cnt += 1
-                        if (cnt & 255) == 0 and time.time() > t_end - 6.0:
-                            return None
-                        rel = _exact_pair_rel(raster, bays[b1], blocks_data,
-                                              i, oi1, x1, y1, j, oi2, x2, y2)
-                        if any(rel):
-                            out.append((i, pi, j, pj) + rel)
-                            if len(out) > 3 * pair_cap:
-                                return out
-        return out
-
-    menus = build_menus(len(movers), K)
-    rels = collect(menus)
-    if rels is not None and len(rels) > pair_cap:
-        # one retry at reduced scale
-        menus = build_menus(max(4, len(movers) // 2), 4)
-        rels = collect(menus)
-    dlog(f"bay={bj} ids={len(ids)} movers={len(movers)} "
-         f"menus={sum(len(v) for v in menus.values())} "
-         f"rels={'None' if rels is None else len(rels)} "
-         f"tleft={t_end - time.time():.1f}")
-    if rels is None or len(rels) > pair_cap:
-        return None
-
-    # -- CP-SAT model ------------------------------------------------------------
-    m = cp_model.CpModel()
-    SC = 100
-    w1i = max(1, int(round(w1 * SC)))
-    w3i = max(0, int(round(w3 * SC)))
-    X, E, T = {}, {}, {}
-    obj_terms = []
-    delta = max(1, int(2 * pbar))
-    mv_set = set(bi for bi in ids if len(menus[bi]) > 1)
-    for bi in ids:
-        a0 = src[bi]
-        e0 = int(a0["entry_time"])
-        if bi in mv_set:
-            lo_e, hi_e = rels_[bi], H
-        else:
-            # fix-and-optimize: non-movers keep their placement AND stay within
-            # +-2*pbar of their incumbent time -- full-retime freedom for all
-            # ~115 bay blocks measured as search-drowning (solver only proves
-            # the hint in 72s); local slack is what the movers' rearrangement
-            # actually needs.
-            lo_e, hi_e = max(rels_[bi], e0 - delta), min(H, e0 + delta)
-        E[bi] = m.NewIntVar(min(lo_e, e0), max(hi_e, e0), f"e{bi}")
-        m.AddHint(E[bi], e0)
-        T[bi] = m.NewIntVar(0, H, f"t{bi}")
-        m.Add(T[bi] >= E[bi] + procs[bi] - dues[bi])
-        obj_terms.append(w1i * T[bi])
-        xs = []
-        for pi, (b_, oi, x, y) in enumerate(menus[bi]):
-            X[bi, pi] = m.NewBoolVar(f"x{bi}_{pi}")
-            xs.append(X[bi, pi])
-            offg = prefmax[bi] - prefs_of[bi][b_]
-            if offg > 0 and w3i > 0:
-                obj_terms.append(w3i * offg * X[bi, pi])
-        m.AddExactlyOne(xs)
-        m.AddHint(X[bi, len(menus[bi]) - 1], 1)
-
-    def outside_vv(i, off_i, j, tie_bad, enf):
-        b1, b2 = m.NewBoolVar(""), m.NewBoolVar("")
-        m.Add(E[i] + off_i <= E[j] - (1 if tie_bad == "left" else 0)
-              ).OnlyEnforceIf(enf + [b1])
-        m.Add(E[i] + off_i >= E[j] + procs[j] + (1 if tie_bad == "right" else 0)
-              ).OnlyEnforceIf(enf + [b2])
-        m.AddBoolOr([b1, b2]).OnlyEnforceIf(enf)
-
-    def outside_vf(i, off_i, lo_c, hi_c, tie_left, tie_right, enf):
-        b1, b2 = m.NewBoolVar(""), m.NewBoolVar("")
-        m.Add(E[i] + off_i <= lo_c - (1 if tie_left else 0)
-              ).OnlyEnforceIf(enf + [b1])
-        m.Add(E[i] + off_i >= hi_c + (1 if tie_right else 0)
-              ).OnlyEnforceIf(enf + [b2])
-        m.AddBoolOr([b1, b2]).OnlyEnforceIf(enf)
-
-    # -- cross-candidate constraints ---------------------------------------------
-    for (i, pi, j, pj, col, e12, x12, e21, x21) in rels:
-        if time.time() > t_end - 4.0:
-            return None
-        enf = [X[i, pi], X[j, pj]]
-        if col:
-            b1, b2 = m.NewBoolVar(""), m.NewBoolVar("")
-            m.Add(E[i] + procs[i] <= E[j]).OnlyEnforceIf(enf + [b1])
-            m.Add(E[j] + procs[j] <= E[i]).OnlyEnforceIf(enf + [b2])
-            m.AddBoolOr([b1, b2]).OnlyEnforceIf(enf)
-            continue
-        if e12:
-            outside_vv(i, 0, j, "left" if j < i else "none", enf)
-        if x12:
-            outside_vv(i, procs[i], j, "right" if j > i else "none", enf)
-        if e21:
-            outside_vv(j, 0, i, "left" if i < j else "none", enf)
-        if x21:
-            outside_vv(j, procs[j], i, "right" if i > j else "none", enf)
-
-    # -- foreign-bay candidates vs that bay's FIXED schedule ---------------------
-    for bi in ids:
-        for pi, (b_, oi, x, y) in enumerate(menus[bi]):
-            if b_ == bj:
-                continue
-            for (fb, fa, fe, fbb) in sched[b_]:
-                fj = fb.block_id
-                col, e_cf, x_cf, e_fc, x_fc = _exact_pair_rel(
-                    raster, bays[b_], blocks_data, bi, oi, x, y,
-                    fj, fb.orient_idx, fb.x, fb.y)
-                if not (col or e_cf or x_cf or e_fc or x_fc):
-                    continue
-                enf = [X[bi, pi]]
-                fa_i, fe_i = int(fa), int(fe)
-                if col:
-                    outside_vf(bi, procs[bi], fa_i, fe_i + procs[bi],
-                               False, False, enf)
-                    continue
-                if e_cf:
-                    outside_vf(bi, 0, fa_i, fe_i, fj < bi, False, enf)
-                if x_cf:
-                    outside_vf(bi, procs[bi], fa_i, fe_i, False, fj > bi, enf)
-                if e_fc:
-                    b1, b2 = m.NewBoolVar(""), m.NewBoolVar("")
-                    m.Add(E[bi] >= fa_i + (1 if bi < fj else 0)
-                          ).OnlyEnforceIf(enf + [b1])
-                    m.Add(E[bi] + procs[bi] <= fa_i).OnlyEnforceIf(enf + [b2])
-                    m.AddBoolOr([b1, b2]).OnlyEnforceIf(enf)
-                if x_fc:
-                    b3, b4 = m.NewBoolVar(""), m.NewBoolVar("")
-                    m.Add(E[bi] >= fe_i).OnlyEnforceIf(enf + [b3])
-                    m.Add(E[bi] + procs[bi] <= fe_i - (1 if bi > fj else 0)
-                          ).OnlyEnforceIf(enf + [b4])
-                    m.AddBoolOr([b3, b4]).OnlyEnforceIf(enf)
-        if time.time() > t_end - 4.0:
-            return None
-
-    m.Minimize(sum(obj_terms))
-    rem = t_end - time.time() - 0.5
-    dlog(f"model built, rem={rem:.1f}")
-    if rem < 5.0:
-        return None
-    before = 0
-    for bi in ids:
-        a0 = src[bi]
-        before += w1i * max(0, a0["exit_time"] - dues[bi])
-        before += w3i * (prefmax[bi] - prefs_of[bi][bj])
-    solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = rem
-    solver.parameters.num_search_workers = int(
-        _osx.environ.get("OGC_XPACK_WORKERS", "1"))
-    try:
-        status = solver.Solve(m)
-    except Exception:
-        return None
-    after = (int(solver.ObjectiveValue())
-             if status in (cp_model.OPTIMAL, cp_model.FEASIBLE) else -1)
-    dlog(f"solve status={solver.StatusName(status)} before={before} "
-         f"after={after} branches={solver.NumBranches()} "
-         f"wall={solver.WallTime():.1f}")
-    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        return None
-    if after >= before:
-        return None
-
-    # -- assemble + exact validation ---------------------------------------------
-    chosen = {}
-    for bi in ids:
-        for pi in range(len(menus[bi])):
-            if solver.Value(X[bi, pi]):
-                b_, oi, x, y = menus[bi][pi]
-                e = int(solver.Value(E[bi]))
-                chosen[bi] = (b_, oi, x, y, e, e + procs[bi])
-                break
-    work = {bi: dict(a) for bi, a in src.items()}
-    for bi, (b_, oi, x, y, e, ex) in chosen.items():
-        work[bi] = {"block_id": bi, "bay_id": b_, "x": int(x), "y": int(y),
-                    "orient_idx": oi, "entry_time": int(e),
-                    "exit_time": int(ex)}
-    if len(work) != n:
-        return None
-    # validate every changed block against its FINAL bay context
-    sched2, _l2 = _rebuild_sched(work, blocks_data, n_bays)
-    touched_bays = {bj} | {c[0] for c in chosen.values()}
-    for b_ in touched_bays:
-        items2 = [(it[0], it[1], it[2]) for it in sched2[b_]]
-        for k_ in range(len(items2)):
-            nb, e, ex = items2[k_]
-            bi = nb.block_id
-            if bi not in chosen and b_ != bj:
-                continue      # untouched foreign incumbents: mutual pairs
-                #               unchanged; immigrants are checked below
-            others = [items2[j2] for j2 in range(len(items2)) if j2 != k_]
-            if not _can_place(bays[b_], others, nb, e, ex):
-                dlog(f"exact validation FAILED for block {bi} in bay {b_}")
-                return None
-    return work
-
-
 def _improve(prob_info, assignments, bays, bay_u, w1, w2, w3, deadline, forced,
              seed=4242, sa=False, on_best=None, inbox=None, raster=None,
              repack_every=0, xbay=False, repack_win_scale=2.0, deep=False):
@@ -4009,45 +3570,6 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                     base, ob = w_, o_
         return base, ob
 
-    def whole_bay_phase(base, ob, until):
-        """v18 (as-measured): aim exact packing at the GLOBAL BEST, late.
-        Drains the island inbox for the best-known incumbent, then fires
-        v17's PROVEN window-scale exact-pack shots (D=14/K=12, ~13s,
-        ~-27k per accept at ~1/8 rate) in a loop -- accepts compound on the
-        adopted base and are pushed (banked, because the base IS the global
-        best: v17's placement error fixed). The WHOLE-BAY model
-        (`_exact_pack_bay`) is NOT fired: measured zero across five
-        configurations on both gate targets (full/delta retime domains,
-        20x8 / 8x5 scales, 8-way parallel solve, mover-free menus, clustered
-        movers -- always FEASIBLE-at-hint, millions of branches, soundness
-        after<=before always held). Exact neighborhoods pay only when small
-        and dense; the function stays for provenance."""
-        if raster is None or not _HAVE_NUMPY:
-            return base, ob
-        if inbox is not None:
-            try:
-                while True:
-                    o_in, a_in = inbox.get_nowait()
-                    if o_in < ob - 1e-9:
-                        ob = o_in
-                        base = {k: dict(v) for k, v in a_in.items()}
-            except Exception:
-                pass
-        dl = min(until, deadline)
-        while time.time() < dl - 15.0:
-            try:
-                w_ = _exact_pack_window(prob_info, base, bays, bay_u,
-                                        w1, w2, w3, raster, _xrng, dl,
-                                        forced=forced, budget_s=13.0)
-            except Exception:
-                w_ = None
-            if w_ is not None:
-                o_ = iobj(w_)
-                if o_ < ob - 1e-9:
-                    push(o_, w_, force=True)
-                    base, ob = w_, o_
-        return base, ob
-
     # fluid-target cache. targets are deterministic per (c_eff, mode), so
     # compute each grid point once.
     _tgt_cache = {}
@@ -4184,18 +3706,11 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
             except Exception:
                 pass
 
-    def polish_v13(assign, seed, wholebay=False):
+    def polish_v13(assign, seed):
         """v17 RESTORATION polish: byte-clone of v13's polish -- improve ->
         CP-SAT retime -> improve -> Z3 endgame; NO repack rounds, NO harvest
         cycles, NO xbay (repack_every=0 keeps _improve byte-exact v13 per the
-        v14 contract). Used by the restoration slots (W2 non-forced tardy and
-        W0 forced non-giant). v18: `wholebay=True` (W0 slot only) replaces the
-        improve-2 leg with the whole-bay exact phase aimed at the global best
-        -- the 30/33-winning raw builds happen in the LOTTERY (before this),
-        and no banked draw depends on the W0 slot's improve-2, so the last
-        ~35% of that worker's window is the free real estate heuristic_18
-        earmarks. W2's non-forced clone keeps wholebay=False: prob_34's
-        banked winner is THIS pipeline's z3 endgame and 21's is its cpsat."""
+        v14 contract). Used only by the restoration slot below."""
         cp_at = t_start + 0.62 * window
         o1, r1 = improve(assign, seed, until=cp_at)
         try:
@@ -4211,9 +3726,7 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                 base, ob = rc, oc
         z3_at = deadline - (min(12.0, 0.05 * window) if raster is not None
                             else 0.0)
-        if wholebay:
-            base, ob = whole_bay_phase(base, ob, until=z3_at)
-        elif time.time() < z3_at - 2.0:
+        if time.time() < z3_at - 2.0:
             o2, r2 = improve(base, seed + 1, until=z3_at)
             if o2 < ob:
                 base, ob = r2, o2
@@ -4265,21 +3778,24 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
             except Exception:
                 a0 = None
             if a0 is not None:
-                wb_at = t_start + 0.55 * window
-                wb_end = t_start + 0.88 * window
+                cp_at = t_start + 0.62 * window
                 z3_at = deadline - min(12.0, 0.05 * window)
-                o1, r1 = improve(a0, seed=1616, until=wb_at, repack_every=3,
+                o1, r1 = improve(a0, seed=1616, until=cp_at, repack_every=3,
                                  xbay=False)
                 base, ob = r1, o1
-                # v18: WHOLE-BAY exact packing aimed at the global best (the
-                # island inbox is drained inside the phase). Supersedes v17's
-                # window shots on the reclaimed stream (measured net-zero).
-                base, ob = whole_bay_phase(base, ob, until=wb_end)
+                # v17: exact packing shots on the reclaimed stream (the free
+                # compute earmarked for the new mechanism; targets 39/26-class
+                # density + the saturated giants). Obj-gated; greedy paths
+                # stand on any failure.
+                base, ob = exact_shots(base, ob, n_shots=2, budget_s=15.0,
+                                       until=cp_at + 40.0)
                 if time.time() < z3_at - 2.0:
                     o2, r2 = improve(base, seed=1617, until=z3_at,
                                      repack_every=3, xbay=True)
                     if o2 < ob:
                         base, ob = r2, o2
+                base, ob = exact_shots(base, ob, n_shots=1, budget_s=15.0,
+                                       until=z3_at + 10.0)
                 if time.time() < deadline - 0.5:
                     try:
                         rz, oz = _z3_relocate(prob_info, base, bays, bay_u,
@@ -4318,10 +3834,7 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                 if time.time() >= cap or gi > 60:
                     break
             if cands:
-                # v18: the W0 slot's improve-2 leg becomes the whole-bay
-                # exact phase (aimed at the global best via the inbox).
-                polish_v13(min(cands, key=lambda c: c[0])[1], seed=3333,
-                           wholebay=True)
+                polish_v13(min(cands, key=lambda c: c[0])[1], seed=3333)
             return
         # W0 = EXACT v9 replica (same rng streams, same two-pass improver).
         # This is the no-regression anchor: the improver is basin-sensitive, so
@@ -4626,11 +4139,8 @@ def _worker_main(wid, prob_info, timelimit, t_start, q, inbox=None):
             except Exception:
                 pass
 
-        # v18: W0 gets an inbox too -- consumed ONLY by the reclaimed stream /
-        # v13-clone slot and the whole-bay phase (aim at the global best). The
-        # v9-replica path never touches it, so the anchor stays byte-exact.
         _run_strategy(wid, prob_info, timelimit, t_start, push,
-                      inbox=inbox)
+                      inbox=None if wid == 0 else inbox)
     except Exception:
         pass
 
