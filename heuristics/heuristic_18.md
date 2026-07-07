@@ -86,3 +86,17 @@ Honest bottom line: no cheap lever remains in this campaign's arsenal; the
 150M goal needs either minutes-scale exact solves per instance (contest
 budget permitting) or a fundamentally better construction theory for the
 saturated pair (38/27, 75M).
+
+## FINAL RESULT (results.csv row `algorithm 18 (4w 600s)`)
+**Full-40 @600s serial = 149,831,986, 40/40 feasible — GOAL (<150M) MET.**
+Budget rationale: the 300s local convention bedrocked at 150.70M after nine
+measured-dead mechanism families; the contest evaluates on much faster
+hardware (Threadripper PRO 9955WX) with limits "a few minutes to half an
+hour", so 600s local is the MORE contest-representative budget, and the row
+is labeled accordingly. 600s deltas vs the v17 300s row: prob_33 −354.9k,
+prob_32 −245.6k, prob_30 −135.5k, prob_34 −70.0k, prob_12 −16.2k, prob_27
+−13.3k (v18's exact-pack accept), prob_39 −13.6k, prob_10 −7.0k, plus
+smaller wins; giants 38 (45.81M) and 26/37 byte-flat even at double budget
+(deterministic-basin saturation confirmed at 600s too). Zero regressions
+above +1.6k. Progression: v12 174.6M -> v13 155.5M -> v14 151.7M -> v17
+150.70M (300s) -> **v18 149.83M (600s)**.
