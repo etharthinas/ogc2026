@@ -46,3 +46,43 @@
   restorations per the v17 full row; (5) full-40 bench_row @300s.
 
 ## Results (filled after testing)
+
+### Units — whole-bay model SOUND but MEASURED-DEAD
+Soundness held at every scale (after <= before in every solve; the incumbent
+is always model-reproducible at K=1 scale, 47-115-block bays, 1.8k-9.8k exact
+relations). ZERO yield in five configurations on both gate targets (prob_39
+and prob_26): full-retime domains, +-2*pbar fix-and-optimize domains, 8x5
+small scale, 8-way parallel CP-SAT (82k -> 4M branches), mover-excluded menu
+scans, clustered congestion-window movers -- always FEASIBLE-at-hint at
+45-90s budgets. Conclusion (inverts the h18 premise): exact neighborhoods
+pay only when SMALL and DENSE enough to near-exhaust (v17's destroyed-window
+scale); scope expansion outruns solver power. `_exact_pack_bay` kept in the
+file unwired, for provenance.
+
+### Pivot shipped: v17-window shots aimed at the GLOBAL BEST
+The dedicated late phase (reclaimed W0 stream [0.55w,0.88w]; W0 v13-clone
+improve-2 slot) drains the island inbox and loops the proven D=14/K=12/13s
+window shots on the adopted global best. W0 given an inbox (v9 path never
+touches it; byte-exact).
+
+### Ladder (final build, 14 runs)
+- Spot gate {39,26,33,21,23}: 12,361,461 flat / 9,653,490 flat / 9,950,093
+  (+28,674 = the known pacing-sensitive late-lottery draw; the attribution
+  probe itself drew this value -- run noise, not a code effect) / 1,380,772
+  v13-exact / 3,390,436 flat. Net +28.7k vs GATE <= -350k: **GATE MISSED**.
+- Protect: 38 flat / **27 = 29,185,135 (-13,333: the campaign's FIRST in-run
+  banked exact-pack accept, on the instance that survived eight mechanism
+  families -- the gbest-aiming fix works, the yield is just tiny)** / 35
+  held 1,346,898 / 31 flat / 30 + 34 + 28 v13-exact / 3 = 66,190 (-540
+  bonus) / prob_1 @60s = 18,357 byte-exact.
+
+### Verdict
+v18 net vs v17 ~= -13.9k structural (27 -13,333, 3 -540; 33's +28.7k is
+coin-flip pacing). Projection ~150.69M vs goal <150M: short ~690k. The
+ninth mechanism family (exact packing, any scope, aimed anywhere) is now
+measured to its ceiling: sound, real, ~-13-27k per rare accept. Hygiene
+pool (+26k on 9/14/16) judged not worth ~2h of attribution machine time.
+Honest bottom line: no cheap lever remains in this campaign's arsenal; the
+150M goal needs either minutes-scale exact solves per instance (contest
+budget permitting) or a fundamentally better construction theory for the
+saturated pair (38/27, 75M).
