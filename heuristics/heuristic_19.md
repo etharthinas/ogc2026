@@ -633,5 +633,21 @@ the intricate rolling-horizon CP-SAT machinery to reconfirm a measured-negative
 result is poor engineering judgment. Recorded as premise-refuted, not attempted.
 
 ### 19e — assembly + full-40 @600s
-myalgorithm_19.py == v18 (no mechanism improved on it). No SOTA change;
-`myalgorithm.py` stays v18 = 149,831,986. §13 decision surfaced to the user.
+myalgorithm_19.py == v18 (no mechanism improved on it). `myalgorithm.py` stays
+v18 (code unchanged). §13 decision surfaced to the user → user chose "renegotiate
+to a reachable target".
+
+**Renegotiated-target harvest (clean 600s re-bench, 9 variable non-giant insts):**
+Only prob_31 moved reliably: banked 11,268,243 → clean 10,981,881 (−286,362),
+CONFIRMED by two independent clean runs (300s=11,055,999; 600s=10,981,881, both
+< banked, and more budget gave the lower value) ⇒ the banked cell was a
+loaded-machine artifact, not a lucky draw. prob_32 REGRESSED +54,186 on one
+clean run (inconclusive noise). prob_26/33/37/30/23/28/40 reproduced banked
+BYTE-EXACTLY (deterministic/saturated). So within-version run variance is real
+but BIDIRECTIONAL and small (confirms dead family #7: re-rolling is not a lever;
+taking per-instance mins would be bench-shopping). Recorded row `algorithm 19`
+= actual clean measurements (31/32 re-measured, rest banked) = **149,599,810**
+(−232,176 vs v18, all of it the two-sided noise on 31/32; NOT an algorithmic
+gain). Honest frontier ≈ 149.55–149.83M within noise. **<125M remains
+structurally unreachable** (19a). No code change; the campaign's lever arsenal
+is exhausted.
