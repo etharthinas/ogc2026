@@ -596,17 +596,42 @@ the measured frontier as evidence. Do NOT silently bench-shop budgets.
 
 ## Results (filled after testing)
 
-### 19a — ledger + instrumentation
-(pending)
+### 19a — ledger + instrumentation (DONE — see heuristics/ledger_19.md)
+Tier-T capacity-honest measurement (the plan's "do first"). Method: reconstruct
+the TRUE banked incumbent by running the real v18 4-worker `algorithm()` and
+converting its operations back to an assignment (`baseline/run_v18_save.py`),
+then measure realized bay density + admission delay + tardiness
+(`baseline/measure_giant.py`). **Decisive result: the four big rocks
+(38/27/39/31 = 96.6M, the plan's entire targetable mass) are DENSITY-SATURATED —
+peak realized bay density ≥ 0.94 on every bay, > 1.0 where multi-layer stacking
+is exploited.** No packing slack remains. This refutes the premise of
+Improvements 2/3/4 (all assume untapped density); the fluid LBs the −24.84M
+thesis rested on are ~40% loose preemptive mirages. Realistic floor ≈ incumbent.
+Frontier verdict: **<125M is NOT reachable** — even conceding the entire
+mid-band optimistically (−3M) leaves ~146.8M. This is the §13 case.
 
-### 19b — LAHC explorer {31,39,26,33} + engine multipliers in-slot
-(pending)
+### 19b — acceptance-rule diversification (Improvement 5) — MEASURED DEAD
+The one genuinely-untried family. Tested from the true banked incumbents
+(`baseline/accept_test.py`, `baseline/lahc_run.py`):
+- greedy floor: 31 → 11,030,700 (−25k); **39 → FLAT (+0)** (giant not
+  round-starved once converged).
+- SA (`sa=True`, the wired-but-never-used uphill path): 31 → 11,030,700,
+  IDENTICAL to greedy — no better basin reachable.
+- LAHC ruin-recreate, multiple L/ruin/seed configs incl. seeded history:
+  43–56 uphill accepts (it wanders), best-seen NEVER below incumbent on 31 or 39.
+- Throughput wall: ~0.2–0.7 iters/s; profiling pins 92% in `_Raster.scan_scoped`;
+  numba NOT importable in `.venv_ogc` → Improvement 7 (the multiplier the plan
+  counted on) unavailable. Iteration-heavy metaheuristics structurally infeasible.
+Kill criterion ("31 AND 39 flat") MET → the campaign's **tenth measured-dead
+family**.
 
-### 19c — MPC constructor vs layout book on {38,27,39}
-(pending)
-
-### 19d — calibrated flow plan {38,27,26}
-(pending)
+### 19c/19d — MPC constructor / layout book / calibrated flow plan — NOT PURSUED
+19a's saturation measurement is exactly Improvement 4's own cheap kill test
+("if exact density-max cannot beat accidental density, kill early"): accidental
+density is already ≥0.94–1.13, so exact density-max cannot beat it. Implementing
+the intricate rolling-horizon CP-SAT machinery to reconfirm a measured-negative
+result is poor engineering judgment. Recorded as premise-refuted, not attempted.
 
 ### 19e — assembly + full-40 @600s
-(pending)
+myalgorithm_19.py == v18 (no mechanism improved on it). No SOTA change;
+`myalgorithm.py` stays v18 = 149,831,986. §13 decision surfaced to the user.
