@@ -150,10 +150,20 @@ Consequences:
 - It will NOT by itself reach the 10.4M spot gate on 31. Deeper progress
   needs real diversification inside the walk (randomized window selection /
   tie-breaking, reheat cycles) or combination with other moves.
-- Coverage test in flight: same recipe on {39, 26, 33} (clean, serial,
-  build 120s + explore 300s) — if it generalizes, this is a portfolio-wide
-  cheap win; then validate on the Windows bench machine before wiring into
-  `myalgorithm_19.py` (19b).
+- **Coverage test result (clean, serial, build 120s + explore 300s each):
+  does NOT generalize.** prob_39 (12,890,363), prob_26 (10,827,881), prob_33
+  (9,950,093) all flat — sideways ties accepted (27/41/41) but zero negative
+  deltas. The two missed windows were a prob_31-specific artifact of its
+  deterministic trajectory. (Note also: Mac @120s incumbents on 26/33 are
+  WORSE than the banked Windows rows — 10.83M vs 9.65M, 9.95M vs 9.57M —
+  pacing-basin variance cuts both ways across machines.)
+- Net standing of Improvement 5 after the full sweep: one bankable
+  prob_31-only win (−51,282 Mac; Windows validation pending) + the negative
+  results recorded above. The plan's spot gate (31 ≤ 10.4M / 39 ≤ 11.8M) is
+  NOT met; before invoking the kill criterion, the two named unlocks remain
+  untested: Improvement-7 throughput (10–100× iterations would make the
+  fresh-start/LAHC trajectory regime reachable) and diversified window
+  selection inside the sideways walk.
 
 **Bench-hygiene reminder** (bit us twice today): concurrent runs on this
 machine corrupt builds (prob_39 build 12.89M → 13.98M under co-load; earlier
