@@ -113,6 +113,34 @@ rerun and the repack-move variant before invoking the kill. Do NOT record
 Improvement 5 dead yet; record "flat at current throughput, unlock candidates
 = Improvement 7 speedup or joint-move perturbation."
 
+## FIRST SIGNAL — repack-move + RRT (`--repack --rrt 0.02`), 2026-07-10
+
+The joint-move-perturbation unlock candidate WORKS on prob_31: perturbation =
+`_repack_window` (v18's strongest joint move, which v18 only ever accepts
+downhill), acceptance = linear RRT (T0 = 2% of start, →0). Mac, build 120s +
+explore 300s, seed 1234:
+
+| prob | start (Mac @120s) | explorer best | delta | iters | accepts |
+|---|---|---|---|---|---|
+| 31 | 10,927,585 (clean value reproduced) | **10,876,303** | **−51,282** | 108 | 54 |
+| 39 | 13,978,536 (CONTAMINATED build — co-load) | 13,969,364 | −9,172 | 73 | 25 |
+
+First negative candidate deltas of the whole sweep (−25.9k/−25.3k on 31,
+−9.2k on 39): an RRT-wandered `cur` exposes congested windows the
+deterministic v18 trajectory never repacks. prob_31 moved after being
+byte-flat across v14→v18; vs the banked Windows 600s row its Mac total is now
+−391,940 (−340,658 pacing/basin + −51,282 explorer). CAVEATS: both runs
+co-ran with another session's experiments (see bench-hygiene note) — prob_31's
+start value reproduced the clean basin so the improvement is likely real but
+needs a quiet-machine rerun; prob_39's build was contaminated outright.
+Confirmation in flight: 2 × (build 120s + explore 900s) on prob_31, seeds
+42/7, rrt 0.02/0.03, run serially on a quiet machine.
+
+Next per the plan's "any movement on 31" rule: sweep rrt fraction ×
+win_scale × max_destroy × seeds, rerun prob_39 clean, then validate on the
+Windows bench machine before wiring a quarantined explorer slot into
+`myalgorithm_19.py` (19b).
+
 **Bench-hygiene reminder** (bit us twice today): concurrent runs on this
 machine corrupt builds (prob_39 build 12.89M → 13.98M under co-load; earlier
 prob_38@300s → fallback). One experiment at a time, check `ps` first.
