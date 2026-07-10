@@ -72,22 +72,47 @@ Mac dev machine, prob_31, internal-objective comparisons (Mac basin @120s =
 10,927,585, budget-flat to 420s — the same "deterministic basin" shape as the
 Windows 600s row at 11,268,243):
 
-| run | start | explore | iters | accepts | best | verdict |
-|---|---|---|---|---|---|---|
-| v0.1 naked R&R (avg ruin 10, caps 40/30, L=1000) | v18 @120s = 10.93M | 300s | 124 | 0 | 10.93M (=start) | throughput FAIL + 0 accepts |
-| v0.2 small ruin (avg 6, caps 18/14, L=300) | v18 @120s = 10.93M | 300s | 230 | 0 | 10.93M (=start) | ≥200 iters OK; still 0 accepts |
-| v0.2 fresh start (raw EDD build 58.1M) | fresh | 300s | 522 | 463 (92%) | 39.15M | LAHC mechanism works, repair too weak to reach the basin |
+| run | prob | start | explore | iters | accepts | best | verdict |
+|---|---|---|---|---|---|---|---|
+| v0.1 naked R&R (avg ruin 10, caps 40/30, L=1000) | 31 | v18 @120s = 10.93M | 300s | 124 | 0 | =start | throughput FAIL + 0 accepts |
+| v0.2 small ruin (avg 6, caps 18/14, L=300) | 31 | 10.93M | 300s | 230 | 0 | =start | ≥200 iters OK; 0 accepts |
+| v0.2 fresh start (raw EDD build 58.1M) | 31 | fresh | 300s | 522 | 463 (92%) | 39.15M | mechanism works; repair far too weak to reach the basin |
+| ILS mode (ruin → 2s `_improve` burst) | 31 | 10.93M | 300s | 93 | 0 | =start | descent can't recover the ruin loss either |
+| delta probe (ILS, 120s) | 31 | 10.93M | 120s | 37 | 0 | =start | **min candidate delta = +13,600** (≈1 tardiness unit), then +40k/+67k/+253k |
+| naked R&R | 39 | v18 @120s = 12.89M | 300s | 345 | 2 (ties) | =start | min deltas 0, 0, +141k |
+| RRT 2% (linear→0) | 31 | 10.93M | 300s | 306 | 8 | =start | wanders to 11.13M and back; nothing better found |
+| RRT 5% (linear→0) | 31 | 10.93M | 300s | 288 | 7 | =start | wider band (cur to 11.42M), still flat |
+| RRT 2% | 39 | 13.98M (BUILD CONTAMINATED — co-running session load; ≠ clean 12.89M) | 300s | 343 | 1 | =start | measurement INVALID; rerun on quiet machine |
 
-**Diagnosis.** From the polished incumbent, EVERY ruin+greedy-rebuild
-candidate is strictly worse — v18's own improver already exhausted this exact
-neighborhood, and LAHC's uphill tolerance only activates once something gets
-accepted (history stays at the incumbent value otherwise: with an always-worse
-repair, LAHC degenerates to hill climbing). The published LAHC successes
-(GDRR) start from construction, not from a foreign polished incumbent. From a
-fresh start the trajectory works mechanically but the naked greedy repair is
-~4-5× weaker than v18's polish stack — 300s is nowhere near the banked basin.
+**Diagnosis (three findings).**
+1. From the polished incumbent, (almost) every ruin+rebuild candidate is
+   strictly worse — v18's improver already exhausted this neighborhood, and
+   LAHC's uphill tolerance never activates when nothing is ever accepted
+   (history stays pinned ⇒ degenerates to hill climbing). Published LAHC
+   successes (GDRR) start from construction, not a foreign polished incumbent.
+2. The barrier is a **sill, not a cliff**: best candidate deltas are tiny
+   (+13.6k on 31; exact ties on 39). RRT does walk over it — but at ~1 it/s
+   (raster placement cost on forced instances) a 300s trajectory is ~100×
+   too short to find a different deep basin. The literature's LAHC/SISR wins
+   run 10³–10⁶ iterations.
+3. Fresh-start trajectories improve monotonically but from 5× worse starts.
 
-**Consequence for Improvement 5**: the payload must be ILS-shaped —
-(SISR ruin as perturbation) → (bounded `_improve` burst as local search) →
-(LAHC/RRT acceptance on the resulting local optima) — not naked ruin-recreate.
-Implemented as `--ils <burst_s>` in the driver; first measurement pending.
+**Consequence for Improvement 5**: acceptance-rule novelty alone is NOT the
+unlock at current iteration costs. Either (a) wire Improvement 7 first
+(numba/vectorized placement → 10–100× iterations, exactly the plan's noted
+fallback "if iterations are too slow"), or (b) make the *move* stronger
+instead of more frequent — final variant under test: `_repack_window` (v18's
+strongest joint move) as the perturbation with RRT acceptance on top
+(`--repack --rrt 0.02`), which v18 itself only ever accepts downhill.
+
+**Sweep status vs the plan's kill criterion** ("31 AND 39 flat after L/ruin
+sweep"): prob_31 is now flat across naked L∈{50,300,1000} × ruin{6,10,strip} ×
+caps{18/14,40/30} × ILS-2s × RRT{2%,5%} — the acceptance-rule side of the
+sweep is effectively exhausted at ~1 it/s. prob_39 still needs a CLEAN RRT
+rerun and the repack-move variant before invoking the kill. Do NOT record
+Improvement 5 dead yet; record "flat at current throughput, unlock candidates
+= Improvement 7 speedup or joint-move perturbation."
+
+**Bench-hygiene reminder** (bit us twice today): concurrent runs on this
+machine corrupt builds (prob_39 build 12.89M → 13.98M under co-load; earlier
+prob_38@300s → fallback). One experiment at a time, check `ps` first.

@@ -105,7 +105,8 @@ def sisr_destroy(cur, blocks_data, w1, w3, rng, avg_size=10, cap=15,
 
 def lahc_explore(prob_info, assign0, deadline, seed=1234, L=300,
                  p_bayblink=0.05, log_every=200, avg_size=6,
-                 slot_time_cap=18, slot_pos_cap=14, ils_burst=0.0):
+                 slot_time_cap=18, slot_pos_cap=14, ils_burst=0.0, rrt=0.0,
+                 repack_move=False):
     bays = [Bay.from_dict(d, i) for i, d in enumerate(prob_info["bays"])]
     blocks_data = prob_info["blocks"]
     w = prob_info.get("weights", {})
@@ -125,38 +126,57 @@ def lahc_explore(prob_info, assign0, deadline, seed=1234, L=300,
     it = accepts = idle = 0
     esc = 0  # reactive ruin escalation level
     deltas = []  # candidate-quality diagnostic: new_obj - cur_obj
+    best0 = best_obj  # RRT threshold anchor
+    t_begin = time.time()
 
     while time.time() < deadline:
         it += 1
-        strip_p = (0.15, 0.35, 0.7)[min(esc, 2)]
-        avg = (avg_size, avg_size + 4, avg_size + 8)[min(esc, 2)]
-        removed = sisr_destroy(cur, blocks_data, w1, w3, rng,
-                               avg_size=avg, cap=avg + 4, p_strip=strip_p,
-                               strip_scale=1 + esc)
-        work = {bi: dict(a) for bi, a in cur.items() if bi not in removed}
-        sched, bay_loads = m._rebuild_sched(work, blocks_data, n_bays)
-        rem_order = m._repair_order(removed, blocks_data, rng.randint(0, 3),
-                                    rng)
-        broken = False
-        for bi in rem_order:
-            if time.time() > deadline:
-                broken = True
-                break
-            blk = blocks_data[bi]
-            bo = None
-            if n_bays >= 2 and rng.random() < p_bayblink:
-                bo = list(range(n_bays))
-                rng.shuffle(bo)  # blink: perturbed bay order
-            place = m._place_block(bi, blk, bays, sched, bay_loads, bay_u,
-                                   w1, w2, w3, forced=forced,
-                                   slot_time_cap=slot_time_cap,
-                                   slot_pos_cap=slot_pos_cap,
-                                   bay_order=bo, raster=raster)
-            if place is None:
-                place = m._force_place(bi, blk, bays, sched)
-            m._add(sched, bay_loads, work, bi, blk, place)
-        if broken or len(work) != n:
-            continue
+        if repack_move:
+            # perturbation = v18's strongest joint move (whole congested
+            # window rebuild); acceptance below may take it even sideways/
+            # uphill, which v18 never does.
+            try:
+                work = m._repack_window(
+                    prob_info, cur, bays, bay_u, w1, w2, w3, raster, rng,
+                    deadline, forced=forced,
+                    mode=('xbay' if (n_bays >= 2 and it % 2 == 1) else 'sbay'),
+                    win_scale=(2.0, 1.0, 3.0, 4.0)[(it // 2) % 4],
+                    max_destroy=30)
+            except Exception:
+                work = None
+            if work is None or len(work) != n:
+                continue
+            work = {bi: dict(a) for bi, a in work.items()}
+        if not repack_move:
+            strip_p = (0.15, 0.35, 0.7)[min(esc, 2)]
+            avg = (avg_size, avg_size + 4, avg_size + 8)[min(esc, 2)]
+            removed = sisr_destroy(cur, blocks_data, w1, w3, rng,
+                                   avg_size=avg, cap=avg + 4, p_strip=strip_p,
+                                   strip_scale=1 + esc)
+            work = {bi: dict(a) for bi, a in cur.items() if bi not in removed}
+            sched, bay_loads = m._rebuild_sched(work, blocks_data, n_bays)
+            rem_order = m._repair_order(removed, blocks_data,
+                                        rng.randint(0, 3), rng)
+            broken = False
+            for bi in rem_order:
+                if time.time() > deadline:
+                    broken = True
+                    break
+                blk = blocks_data[bi]
+                bo = None
+                if n_bays >= 2 and rng.random() < p_bayblink:
+                    bo = list(range(n_bays))
+                    rng.shuffle(bo)  # blink: perturbed bay order
+                place = m._place_block(bi, blk, bays, sched, bay_loads, bay_u,
+                                       w1, w2, w3, forced=forced,
+                                       slot_time_cap=slot_time_cap,
+                                       slot_pos_cap=slot_pos_cap,
+                                       bay_order=bo, raster=raster)
+                if place is None:
+                    place = m._force_place(bi, blk, bays, sched)
+                m._add(sched, bay_loads, work, bi, blk, place)
+            if broken or len(work) != n:
+                continue
         if ils_burst > 0:
             # ILS: the ruin+rebuild is the PERTURBATION; run a short bounded
             # descent (the strongest existing local search) before evaluating,
@@ -171,7 +191,17 @@ def lahc_explore(prob_info, assign0, deadline, seed=1234, L=300,
         new_obj = m._objective(work, blocks_data, bays, bay_u, w1, w2, w3)[0]
         deltas.append(new_obj - cur_obj)
         v = hist[it % L]
-        if new_obj <= v or new_obj <= cur_obj:
+        if rrt > 0.0:
+            # linear Record-to-Record Travel (Santini et al. 2018's
+            # undominated criterion): accept iff f(cand) < f(best) + T,
+            # T decaying linearly to zero over the explore window.
+            frac_left = max(0.0, (deadline - time.time())
+                            / max(1e-9, deadline - t_begin))
+            T = rrt * best0 * frac_left
+            ok_accept = new_obj < best_obj + T
+        else:
+            ok_accept = new_obj <= v or new_obj <= cur_obj
+        if ok_accept:
             cur, cur_obj = work, new_obj
             accepts += 1
         hist[it % L] = cur_obj
@@ -209,6 +239,10 @@ def main():
     ap.add_argument("--spc", type=int, default=14, help="slot_pos_cap")
     ap.add_argument("--fresh", action="store_true",
                     help="start from a raw EDD construction, not v18")
+    ap.add_argument("--rrt", type=float, default=0.0,
+                    help="RRT acceptance: T0 = rrt * initial_obj, linear to 0")
+    ap.add_argument("--repack", action="store_true",
+                    help="use _repack_window as the move instead of SISR ruin")
     ap.add_argument("--ils", type=float, default=0.0,
                     help="seconds of bounded _improve descent per iteration")
     args = ap.parse_args()
@@ -256,7 +290,8 @@ def main():
                                       avg_size=args.avg,
                                       slot_time_cap=args.stc,
                                       slot_pos_cap=args.spc,
-                                      ils_burst=args.ils)
+                                      ils_burst=args.ils, rrt=args.rrt,
+                                      repack_move=args.repack)
     print(f"explorer done: iters={st['iters']} accepts={st['accepts']} "
           f"internal_best={best_obj:,.0f}", flush=True)
     if st.get("deltas"):
