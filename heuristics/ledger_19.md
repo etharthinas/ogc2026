@@ -133,13 +133,27 @@ byte-flat across v14→v18; vs the banked Windows 600s row its Mac total is now
 co-ran with another session's experiments (see bench-hygiene note) — prob_31's
 start value reproduced the clean basin so the improvement is likely real but
 needs a quiet-machine rerun; prob_39's build was contaminated outright.
-Confirmation in flight: 2 × (build 120s + explore 900s) on prob_31, seeds
-42/7, rrt 0.02/0.03, run serially on a quiet machine.
+**Confirmation (2026-07-10, quiet machine): REPRODUCED, and the mechanism's
+character is now clear.** 2 × (build 120s + explore 900s), seeds 42/7,
+rrt 0.02/0.03: BOTH runs produce byte-identical trajectories and the same
+best 10,876,303 (−51,282), reaching it by ~it 200 (~300s) and staying flat
+for the remaining 700s (idle 395). Seed-, rrt-, and time-insensitive ⇒
+repack+RRT is not a stochastic explorer here but a **deterministic
+second-order polish**: the sideways-wandering `cur` exposes exactly two
+improving windows (−25,950 and −25,332) that v18's downhill-only repack pass
+never reaches, then exhausts.
 
-Next per the plan's "any movement on 31" rule: sweep rrt fraction ×
-win_scale × max_destroy × seeds, rerun prob_39 clean, then validate on the
-Windows bench machine before wiring a quarantined explorer slot into
-`myalgorithm_19.py` (19b).
+Consequences:
+- The −51,282 on prob_31 is bankable and cheap (~300s, ~110 iters); the
+  natural wiring is a bounded "sideways-repack" phase appended to polish on
+  stalled instances (obj-gated at the phase level, quarantined per §11).
+- It will NOT by itself reach the 10.4M spot gate on 31. Deeper progress
+  needs real diversification inside the walk (randomized window selection /
+  tie-breaking, reheat cycles) or combination with other moves.
+- Coverage test in flight: same recipe on {39, 26, 33} (clean, serial,
+  build 120s + explore 300s) — if it generalizes, this is a portfolio-wide
+  cheap win; then validate on the Windows bench machine before wiring into
+  `myalgorithm_19.py` (19b).
 
 **Bench-hygiene reminder** (bit us twice today): concurrent runs on this
 machine corrupt builds (prob_39 build 12.89M → 13.98M under co-load; earlier
