@@ -660,16 +660,52 @@ def _time_overlap_rel(sched_bay, t, exit_t):
             if it[1] <= exit_t and t <= it[2]]
 
 
+def _scan_actives(relx, t, exit_t, handoff):
+    """Actives quadruples for a scoped raster scan over [t, exit_t).
+
+    handoff=False: every relx block (the inclusive legacy set -- byte-exact).
+    handoff=True (jv3 lever H): STRICT time overlap only (a < exit_t and
+    t < e). A block exiting exactly at t (or entering exactly at exit_t) no
+    longer paints the scoped occupancy, so the cells it frees become
+    scannable -- the same-tick handoff the official checker allows (all EXITs
+    precede all ENTRYs at a tick) and _can_place already rules on correctly
+    with its strict inequalities; only the conservative prefilter was hiding
+    those cells. Sound because every returned cell is still exact-gated by
+    _can_place against the FULL inclusive relx."""
+    if handoff:
+        return [(b.block_id, b.orient_idx, b.x, b.y)
+                for b, a, e in relx if a < exit_t and t < e]
+    return [(b.block_id, b.orient_idx, b.x, b.y) for b, a, e in relx]
+
+
+def _xtime_candidates(times, sched_bay, lb, proc):
+    """jv3 lever X: off-event entry thresholds. Legacy candidate entries are
+    only {lb} + existing {a, e}; the missing degrees of freedom are
+    t' = e2 - proc (align MY exit with a neighbour's exit tick) and
+    t' = a2 - proc (exit exactly when a neighbour enters) -- the same
+    thresholds _zero_candidates has always known. Both dodge the exit-prism
+    checks via the checker's exits-before-entries tick rule."""
+    for it in sched_bay:
+        a, e = it[1], it[2]
+        for tt in (int(e) - proc, int(a) - proc):
+            if tt >= lb:
+                times.add(tt)
+
+
 def _find_earliest_slot(bay, sched_bay, bi, blk, orients, lb, proc,
-                        time_cap=40, pos_cap=24):
+                        time_cap=40, pos_cap=24, xtimes=False):
     """Earliest feasible (orient, x, y, entry) with entry >= lb, packing densely.
-    Returns the first (= earliest, least-tardy) feasible placement, or None."""
+    Returns the first (= earliest, least-tardy) feasible placement, or None.
+    xtimes=False is byte-exact legacy; True adds the off-event thresholds
+    (jv3 lever X)."""
     times = {int(lb)}
     for _, a, e in [(it[0], it[1], it[2]) for it in sched_bay]:
         if e >= lb:
             times.add(int(e))
         if a >= lb:
             times.add(int(a))
+    if xtimes:
+        _xtime_candidates(times, sched_bay, lb, proc)
     for t in sorted(times)[:time_cap]:
         exit_t = t + proc
         relx = _time_overlap_rel(sched_bay, t, exit_t)
@@ -686,14 +722,16 @@ def _find_earliest_slot(bay, sched_bay, bi, blk, orients, lb, proc,
 
 
 def _find_earliest_slot_raster(bay, bay_id, sched_bay, bi, blk, orients, lb, proc,
-                               raster, score_pos=True, time_cap=16, pos_cap=28):
+                               raster, score_pos=True, time_cap=16, pos_cap=28,
+                               handoff=False, xtimes=False):
     """v13 RASTER-WINDOWED REPAIR: earliest feasible (orient,x,y,entry) reached
     by a full-position raster scan instead of AABB-corner enumeration -- the
     density lever inside the improver. For each candidate entry time t, build a
     SCOPED occupancy from ONLY the time-overlapping blocks (does NOT touch the
     dispatcher's raster.occ), scan every integer anchor, rank feasible cells by
     perimeter contact, and exact-gate with _can_place. Returns the earliest
-    feasible placement or None."""
+    feasible placement or None. handoff/xtimes default-off == byte-exact
+    legacy (jv3 levers H/X)."""
     times = {int(lb)}
     for it in sched_bay:
         a, e = it[1], it[2]
@@ -701,11 +739,12 @@ def _find_earliest_slot_raster(bay, bay_id, sched_bay, bi, blk, orients, lb, pro
             times.add(int(e))
         if a >= lb:
             times.add(int(a))
+    if xtimes:
+        _xtime_candidates(times, sched_bay, lb, proc)
     for t in sorted(times)[:time_cap]:
         exit_t = t + proc
         relx = _time_overlap_rel(sched_bay, t, exit_t)
-        actives = [(it0.block_id, it0.orient_idx, it0.x, it0.y)
-                   for (it0, _a, _e) in relx]
+        actives = _scan_actives(relx, t, exit_t, handoff)
         for oi in orients:
             if not _orient_fits(blk, oi, bay):
                 continue
@@ -2942,17 +2981,22 @@ class _Raster:
         self._scan[bay][(bi, oi)] = (self.ver[bay], feas, cx0, cy0)
         return feas, cx0, cy0
 
-    def scan_scoped(self, bay, actives, bi, oi):
+    def scan_scoped(self, bay, actives, bi, oi, near=False):
         """v13 raster-windowed repair primitive. Feasible-anchor grid for
         placing (bi,oi) in `bay` against ONLY `actives` = [(bi2,oi2,x2,y2),...]
         (the blocks time-overlapping the candidate insertion), WITHOUT touching
         self.occ. Returns (feas (R,C) bool | None, cx0, cy0, occ_fp (H,W) bool).
-        Sound in exactly the same conservative sense as scan()."""
+        Sound in exactly the same conservative sense as scan().
+        near=True (jv3 lever N) additionally returns the raw int32 overlap-count
+        grid `total` as a 5th element: cells with small positive counts are the
+        conservative-mask NEAR MISSES (edge-touching placements the unit-grid
+        rounding rejects) a caller may exact-gate with _can_place."""
         H, W = self.H[bay], self.W[bay]
         mask, cx0, cy0 = self.mask(bi, oi)
         nl, MH, MW = mask.shape
         if MH > H or MW > W:
-            return None, cx0, cy0, None
+            return (None, cx0, cy0, None, None) if near else \
+                (None, cx0, cy0, None)
         R = H - MH + 1; C = W - MW + 1
         layers = {}                            # l -> bool (H,W)
         maxL = -1
@@ -2972,6 +3016,10 @@ class _Raster:
             if nl2 - 1 > maxL:
                 maxL = nl2 - 1
         if maxL < 0:
+            if near:
+                return (_np.ones((R, C), dtype=bool), cx0, cy0,
+                        _np.zeros((H, W), dtype=bool),
+                        _np.zeros((R, C), dtype=_np.int32))
             return _np.ones((R, C), dtype=bool), cx0, cy0, \
                 _np.zeros((H, W), dtype=bool)
         union_ge = [None] * (maxL + 1)
@@ -2994,6 +3042,8 @@ class _Raster:
                 continue
             win = _swv(Vk.astype(_np.int32), (MH, MW))
             total += _np.einsum('rcij,ij->rc', win, mk.astype(_np.int32))
+        if near:
+            return (total == 0), cx0, cy0, occ_fp, total
         return (total == 0), cx0, cy0, occ_fp
 
 
@@ -3042,6 +3092,41 @@ def _order_cells(raster, feas, cx0, cy0, bi, oi, W, occ_fp, prefer_contact, rng)
     else:
         idx = _np.argsort(bl)                   # pure BL (== v12 when rng None)
     return [(int(c[ii]) - cx0, int(r[ii]) - cy0) for ii in idx]
+
+
+def _scoped_cells(raster, bay_id, actives, bi, oi, near=False, cap_near=20):
+    """jv3: ordered candidate (x,y) cells for placing (bi,oi) in `bay_id`
+    against `actives`. Feasible (conservative-mask) cells first, perimeter-
+    ordered as the legacy movers expect. When near=True (lever N) up to
+    cap_near NEAR-MISS cells follow -- anchors whose only obstruction is a small
+    conservative-mask overlap (total in 1..3), i.e. edge-touch placements the
+    unit-grid rounding rejects but _can_place may accept. Near cells are ordered
+    by ascending overlap count (fewest violations first = most likely to pass
+    the exact gate), BL tie-break. Every returned cell MUST still be exact-gated
+    by _can_place at the call site -- this only widens the candidate menu, it
+    never asserts feasibility."""
+    if near:
+        feas, cx0, cy0, occ_fp, total = raster.scan_scoped(
+            bay_id, actives, bi, oi, near=True)
+    else:
+        feas, cx0, cy0, occ_fp = raster.scan_scoped(bay_id, actives, bi, oi)
+        total = None
+    if feas is None:
+        return []
+    cells = []
+    if feas.any():
+        cells = _order_cells(raster, feas, cx0, cy0, bi, oi,
+                             raster.W[bay_id], occ_fp, True, None)
+    if near and total is not None:
+        rc = _np.argwhere((total > 0) & (total <= 3))
+        if len(rc):
+            r = rc[:, 0]; c = rc[:, 1]
+            tv = total[r, c]
+            bl = (r * (raster.W[bay_id] + 1) + c)
+            idx = _np.lexsort((bl, tv))         # primary overlap asc, then BL
+            for ii in idx[:cap_near]:
+                cells.append((int(c[ii]) - cx0, int(r[ii]) - cy0))
+    return cells
 
 
 # =============================================================================
@@ -3478,7 +3563,8 @@ def _rel_sched_bbox(sched_bay, entry, exit_t):
 # -----------------------------------------------------------------------------
 
 def _z3_relocate(prob_info, assign, bays, bay_u, w1, w2, w3, raster, deadline,
-                 pos_cap=16, max_passes=3, time_cap=8):
+                 pos_cap=16, max_passes=3, time_cap=8,
+                 handoff=False, xtimes=False, near=False):
     """Preference relocation endgame: for each off-preference block (desc by
     w3 gain) try moving it to a higher-preference bay -- first at the SAME
     [entry, exit) interval (tardiness-neutral), then at ALTERNATIVE entry
@@ -3490,7 +3576,11 @@ def _z3_relocate(prob_info, assign, bays, bay_u, w1, w2, w3, raster, deadline,
     _can_place; the delta is computed exactly BEFORE geometry work, so only
     strictly-improving (t, bay) pairs are ever scanned. Removing a block from
     its old bay can never invalidate others (strictly fewer obstacles).
-    Returns (new_assign, new_obj) or (None, None)."""
+    Returns (new_assign, new_obj) or (None, None).
+    jv3 levers (all default-off == byte-exact): handoff exposes same-tick
+    freed footprints in the scoped scan; xtimes adds e2-proc entry thresholds;
+    near exact-gates conservative-mask near misses. All widen the candidate
+    menu only -- every accept is still the same strict full-objective gate."""
     blocks_data = prob_info["blocks"]
     n_bays = len(bays)
     if n_bays < 2 or raster is None or not _HAVE_NUMPY:
@@ -3552,7 +3642,9 @@ def _z3_relocate(prob_info, assign, bays, bay_u, w1, w2, w3, raster, deadline,
                     cands_t.add(alap); cands_t.add(rel_t)
                 for it2 in sched[tj]:
                     a2, e2 = it2[1], it2[2]
-                    for tt in (int(e2), int(a2) - proc):
+                    tts = (int(e2), int(a2) - proc, int(e2) - proc) if xtimes \
+                        else (int(e2), int(a2) - proc)
+                    for tt in tts:
                         if rel_t <= tt <= t_hi:
                             cands_t.add(tt)
 
@@ -3570,17 +3662,14 @@ def _z3_relocate(prob_info, assign, bays, bay_u, w1, w2, w3, raster, deadline,
                         continue
                     e_new = t + proc
                     relx = _time_overlap_rel(sched[tj], t, e_new)
-                    actives = [(b.block_id, b.orient_idx, b.x, b.y)
-                               for b, _a2, _e2 in relx]
+                    actives = _scan_actives(relx, t, e_new, handoff)
                     for oi in orients:
                         if not _orient_fits(blk, oi, bay):
                             continue
-                        feas, cx0, cy0, occ_fp = raster.scan_scoped(
-                            tj, actives, bi, oi)
-                        if feas is None or not feas.any():
+                        cells = _scoped_cells(raster, tj, actives, bi, oi,
+                                              near=near)
+                        if not cells:
                             continue
-                        cells = _order_cells(raster, feas, cx0, cy0, bi, oi,
-                                             raster.W[tj], occ_fp, True, None)
                         tried = 0
                         for (x, y) in cells:
                             nb = _mkblock(bi, blk, x, y, oi)
@@ -3617,7 +3706,8 @@ def _z3_relocate(prob_info, assign, bays, bay_u, w1, w2, w3, raster, deadline,
 
 
 def _w2_rebalance(prob_info, assign, bays, bay_u, w1, w2, w3, raster, deadline,
-                  pos_cap=32, max_passes=6, time_cap=12, try_cap=48):
+                  pos_cap=32, max_passes=6, time_cap=12, try_cap=48,
+                  handoff=False, xtimes=False, near=False):
     """jv2 Stage-1f: workload-imbalance (Z2) sibling of _z3_relocate. The 90s
     ledger showed ~0.6M of pure w2 mass plus ~3.1M of zero-tardy w2+w3 loss
     that NO existing operator can touch: _z3_relocate only moves off-pref
@@ -3708,7 +3798,9 @@ def _w2_rebalance(prob_info, assign, bays, bay_u, w1, w2, w3, raster, deadline,
                 cands_t.add(rel_t)
             for it2 in sched[tj]:
                 a2, e2 = it2[1], it2[2]
-                for tt in (int(e2), int(a2) - proc):
+                tts = (int(e2), int(a2) - proc, int(e2) - proc) if xtimes \
+                    else (int(e2), int(a2) - proc)
+                for tt in tts:
                     if rel_t <= tt <= t_hi:
                         cands_t.add(tt)
 
@@ -3722,15 +3814,12 @@ def _w2_rebalance(prob_info, assign, bays, bay_u, w1, w2, w3, raster, deadline,
                     continue
                 e_new = t + proc
                 relx = _time_overlap_rel(sched[tj], t, e_new)
-                actives = [(b.block_id, b.orient_idx, b.x, b.y)
-                           for b, _a2, _e2 in relx]
+                actives = _scan_actives(relx, t, e_new, handoff)
                 for oi in orients:
-                    feas, cx0, cy0, occ_fp = raster.scan_scoped(
-                        tj, actives, bi, oi)
-                    if feas is None or not feas.any():
+                    cells = _scoped_cells(raster, tj, actives, bi, oi,
+                                          near=near)
+                    if not cells:
                         continue
-                    cells = _order_cells(raster, feas, cx0, cy0, bi, oi,
-                                         raster.W[tj], occ_fp, True, None)
                     tried = 0
                     for (x, y) in cells:
                         nb = _mkblock(bi, blk, x, y, oi)
@@ -3799,7 +3888,8 @@ def _z3_endgame(prob_info, base, ob, bays, bay_u, w1, w2, w3, raster,
             return
         rz, oz = _z3_relocate(prob_info, cur, bays, bay_u,
                               w1, w2, w3, raster, deadline,
-                              pos_cap=48, max_passes=8, time_cap=16)
+                              pos_cap=48, max_passes=8, time_cap=16,
+                              handoff=True, xtimes=True, near=False)
         if rz is not None and oz < cur_o - 1e-9:
             push(oz, rz, force=True)
             cur, cur_o = rz, oz
@@ -3808,7 +3898,8 @@ def _z3_endgame(prob_info, base, ob, bays, bay_u, w1, w2, w3, raster,
         # residuals are invisible to every other mover).
         if time.time() < deadline - 1.0 and r2 > 0:
             rw, ow = _w2_rebalance(prob_info, cur, bays, bay_u,
-                                   w1, w2, w3, raster, deadline)
+                                   w1, w2, w3, raster, deadline,
+                                   handoff=True, xtimes=True, near=False)
             if rw is not None and ow < cur_o - 1e-9:
                 push(ow, rw, force=True)
     except Exception:
@@ -5011,7 +5102,8 @@ def _parent_tail_polish(prob_info, cands, bays, bay_u, w1, w2, w3, tail_end):
             rz, oz = _z3_relocate(prob_info, cands[0][1], bays, bay_u,
                                   w1, w2, w3, raster,
                                   min(tail_end, time.time() + 8.0),
-                                  pos_cap=48, max_passes=8, time_cap=16)
+                                  pos_cap=48, max_passes=8, time_cap=16,
+                                  handoff=True, xtimes=True, near=False)
             if rz is not None and oz < cands[0][0] - 1e-9:
                 cands.insert(0, (oz, rz))
                 naccept += 1
@@ -5031,7 +5123,8 @@ def _parent_tail_polish(prob_info, cands, bays, bay_u, w1, w2, w3, tail_end):
                 break
             rw, ow = _w2_rebalance(prob_info, cands[0][1], bays, bay_u,
                                    w1, w2, w3, raster,
-                                   min(tail_end, time.time() + 6.0))
+                                   min(tail_end, time.time() + 6.0),
+                                   handoff=True, xtimes=True, near=False)
             if rw is not None and ow < cands[0][0] - 1e-9:
                 cands.insert(0, (ow, rw))
                 naccept += 1
@@ -5056,7 +5149,8 @@ def _parent_tail_polish(prob_info, cands, bays, bay_u, w1, w2, w3, tail_end):
                                           w1, w2, w3, raster,
                                           min(tail_end, time.time() + 8.0),
                                           pos_cap=48, max_passes=8,
-                                          time_cap=16)
+                                          time_cap=16,
+                                          handoff=True, xtimes=True, near=False)
                     if rz is not None and oz < cands[0][0] - 1e-9:
                         cands.insert(0, (oz, rz))
                         naccept += 1

@@ -1,4 +1,15 @@
-# myalgorithm_18.py  --  v18 = v17 + exact-pack WINDOW shots aimed at the
+# myalgorithm_jiyun_v2.py  --  jiyun_v2 = v18 + PARENT VERIFY-GUARD FIX +
+#                        (in progress) w2/w3 recovery levers: trade a bounded
+#                        w1 cost for the measured Z2/Z3 overhang instead of
+#                        w1-first-always. See heuristics/heuristic_15_jiyun.md
+#                        (v14-based prototype: levers A/B/C/D measured
+#                        dead/flat, superseded) and the w2/w3 diagnosis runs.
+# Verify-guard fix: the parent's best-first verify used to break on abs_stop
+# BEFORE the first verify; under machine load the end-phase drain overran and
+# returned the 1.9e9 empty-bay fallback with a ready candidate in hand
+# (measured on v14, prob_39 @60s). jiyun_v2 always verifies the single best.
+# =============================================================================
+# v18 = v17 + exact-pack WINDOW shots aimed at the
 #                        GLOBAL BEST (whole-bay model measured-dead and
 #                        retired to provenance). See heuristic_18.md.
 # =============================================================================
@@ -649,16 +660,52 @@ def _time_overlap_rel(sched_bay, t, exit_t):
             if it[1] <= exit_t and t <= it[2]]
 
 
+def _scan_actives(relx, t, exit_t, handoff):
+    """Actives quadruples for a scoped raster scan over [t, exit_t).
+
+    handoff=False: every relx block (the inclusive legacy set -- byte-exact).
+    handoff=True (jv3 lever H): STRICT time overlap only (a < exit_t and
+    t < e). A block exiting exactly at t (or entering exactly at exit_t) no
+    longer paints the scoped occupancy, so the cells it frees become
+    scannable -- the same-tick handoff the official checker allows (all EXITs
+    precede all ENTRYs at a tick) and _can_place already rules on correctly
+    with its strict inequalities; only the conservative prefilter was hiding
+    those cells. Sound because every returned cell is still exact-gated by
+    _can_place against the FULL inclusive relx."""
+    if handoff:
+        return [(b.block_id, b.orient_idx, b.x, b.y)
+                for b, a, e in relx if a < exit_t and t < e]
+    return [(b.block_id, b.orient_idx, b.x, b.y) for b, a, e in relx]
+
+
+def _xtime_candidates(times, sched_bay, lb, proc):
+    """jv3 lever X: off-event entry thresholds. Legacy candidate entries are
+    only {lb} + existing {a, e}; the missing degrees of freedom are
+    t' = e2 - proc (align MY exit with a neighbour's exit tick) and
+    t' = a2 - proc (exit exactly when a neighbour enters) -- the same
+    thresholds _zero_candidates has always known. Both dodge the exit-prism
+    checks via the checker's exits-before-entries tick rule."""
+    for it in sched_bay:
+        a, e = it[1], it[2]
+        for tt in (int(e) - proc, int(a) - proc):
+            if tt >= lb:
+                times.add(tt)
+
+
 def _find_earliest_slot(bay, sched_bay, bi, blk, orients, lb, proc,
-                        time_cap=40, pos_cap=24):
+                        time_cap=40, pos_cap=24, xtimes=False):
     """Earliest feasible (orient, x, y, entry) with entry >= lb, packing densely.
-    Returns the first (= earliest, least-tardy) feasible placement, or None."""
+    Returns the first (= earliest, least-tardy) feasible placement, or None.
+    xtimes=False is byte-exact legacy; True adds the off-event thresholds
+    (jv3 lever X)."""
     times = {int(lb)}
     for _, a, e in [(it[0], it[1], it[2]) for it in sched_bay]:
         if e >= lb:
             times.add(int(e))
         if a >= lb:
             times.add(int(a))
+    if xtimes:
+        _xtime_candidates(times, sched_bay, lb, proc)
     for t in sorted(times)[:time_cap]:
         exit_t = t + proc
         relx = _time_overlap_rel(sched_bay, t, exit_t)
@@ -675,14 +722,16 @@ def _find_earliest_slot(bay, sched_bay, bi, blk, orients, lb, proc,
 
 
 def _find_earliest_slot_raster(bay, bay_id, sched_bay, bi, blk, orients, lb, proc,
-                               raster, score_pos=True, time_cap=16, pos_cap=28):
+                               raster, score_pos=True, time_cap=16, pos_cap=28,
+                               handoff=False, xtimes=False):
     """v13 RASTER-WINDOWED REPAIR: earliest feasible (orient,x,y,entry) reached
     by a full-position raster scan instead of AABB-corner enumeration -- the
     density lever inside the improver. For each candidate entry time t, build a
     SCOPED occupancy from ONLY the time-overlapping blocks (does NOT touch the
     dispatcher's raster.occ), scan every integer anchor, rank feasible cells by
     perimeter contact, and exact-gate with _can_place. Returns the earliest
-    feasible placement or None."""
+    feasible placement or None. handoff/xtimes default-off == byte-exact
+    legacy (jv3 levers H/X)."""
     times = {int(lb)}
     for it in sched_bay:
         a, e = it[1], it[2]
@@ -690,11 +739,12 @@ def _find_earliest_slot_raster(bay, bay_id, sched_bay, bi, blk, orients, lb, pro
             times.add(int(e))
         if a >= lb:
             times.add(int(a))
+    if xtimes:
+        _xtime_candidates(times, sched_bay, lb, proc)
     for t in sorted(times)[:time_cap]:
         exit_t = t + proc
         relx = _time_overlap_rel(sched_bay, t, exit_t)
-        actives = [(it0.block_id, it0.orient_idx, it0.x, it0.y)
-                   for (it0, _a, _e) in relx]
+        actives = _scan_actives(relx, t, exit_t, handoff)
         for oi in orients:
             if not _orient_fits(blk, oi, bay):
                 continue
@@ -2931,17 +2981,22 @@ class _Raster:
         self._scan[bay][(bi, oi)] = (self.ver[bay], feas, cx0, cy0)
         return feas, cx0, cy0
 
-    def scan_scoped(self, bay, actives, bi, oi):
+    def scan_scoped(self, bay, actives, bi, oi, near=False):
         """v13 raster-windowed repair primitive. Feasible-anchor grid for
         placing (bi,oi) in `bay` against ONLY `actives` = [(bi2,oi2,x2,y2),...]
         (the blocks time-overlapping the candidate insertion), WITHOUT touching
         self.occ. Returns (feas (R,C) bool | None, cx0, cy0, occ_fp (H,W) bool).
-        Sound in exactly the same conservative sense as scan()."""
+        Sound in exactly the same conservative sense as scan().
+        near=True (jv3 lever N) additionally returns the raw int32 overlap-count
+        grid `total` as a 5th element: cells with small positive counts are the
+        conservative-mask NEAR MISSES (edge-touching placements the unit-grid
+        rounding rejects) a caller may exact-gate with _can_place."""
         H, W = self.H[bay], self.W[bay]
         mask, cx0, cy0 = self.mask(bi, oi)
         nl, MH, MW = mask.shape
         if MH > H or MW > W:
-            return None, cx0, cy0, None
+            return (None, cx0, cy0, None, None) if near else \
+                (None, cx0, cy0, None)
         R = H - MH + 1; C = W - MW + 1
         layers = {}                            # l -> bool (H,W)
         maxL = -1
@@ -2961,6 +3016,10 @@ class _Raster:
             if nl2 - 1 > maxL:
                 maxL = nl2 - 1
         if maxL < 0:
+            if near:
+                return (_np.ones((R, C), dtype=bool), cx0, cy0,
+                        _np.zeros((H, W), dtype=bool),
+                        _np.zeros((R, C), dtype=_np.int32))
             return _np.ones((R, C), dtype=bool), cx0, cy0, \
                 _np.zeros((H, W), dtype=bool)
         union_ge = [None] * (maxL + 1)
@@ -2983,6 +3042,8 @@ class _Raster:
                 continue
             win = _swv(Vk.astype(_np.int32), (MH, MW))
             total += _np.einsum('rcij,ij->rc', win, mk.astype(_np.int32))
+        if near:
+            return (total == 0), cx0, cy0, occ_fp, total
         return (total == 0), cx0, cy0, occ_fp
 
 
@@ -3031,6 +3092,41 @@ def _order_cells(raster, feas, cx0, cy0, bi, oi, W, occ_fp, prefer_contact, rng)
     else:
         idx = _np.argsort(bl)                   # pure BL (== v12 when rng None)
     return [(int(c[ii]) - cx0, int(r[ii]) - cy0) for ii in idx]
+
+
+def _scoped_cells(raster, bay_id, actives, bi, oi, near=False, cap_near=20):
+    """jv3: ordered candidate (x,y) cells for placing (bi,oi) in `bay_id`
+    against `actives`. Feasible (conservative-mask) cells first, perimeter-
+    ordered as the legacy movers expect. When near=True (lever N) up to
+    cap_near NEAR-MISS cells follow -- anchors whose only obstruction is a small
+    conservative-mask overlap (total in 1..3), i.e. edge-touch placements the
+    unit-grid rounding rejects but _can_place may accept. Near cells are ordered
+    by ascending overlap count (fewest violations first = most likely to pass
+    the exact gate), BL tie-break. Every returned cell MUST still be exact-gated
+    by _can_place at the call site -- this only widens the candidate menu, it
+    never asserts feasibility."""
+    if near:
+        feas, cx0, cy0, occ_fp, total = raster.scan_scoped(
+            bay_id, actives, bi, oi, near=True)
+    else:
+        feas, cx0, cy0, occ_fp = raster.scan_scoped(bay_id, actives, bi, oi)
+        total = None
+    if feas is None:
+        return []
+    cells = []
+    if feas.any():
+        cells = _order_cells(raster, feas, cx0, cy0, bi, oi,
+                             raster.W[bay_id], occ_fp, True, None)
+    if near and total is not None:
+        rc = _np.argwhere((total > 0) & (total <= 3))
+        if len(rc):
+            r = rc[:, 0]; c = rc[:, 1]
+            tv = total[r, c]
+            bl = (r * (raster.W[bay_id] + 1) + c)
+            idx = _np.lexsort((bl, tv))         # primary overlap asc, then BL
+            for ii in idx[:cap_near]:
+                cells.append((int(c[ii]) - cx0, int(r[ii]) - cy0))
+    return cells
 
 
 # =============================================================================
@@ -3467,7 +3563,8 @@ def _rel_sched_bbox(sched_bay, entry, exit_t):
 # -----------------------------------------------------------------------------
 
 def _z3_relocate(prob_info, assign, bays, bay_u, w1, w2, w3, raster, deadline,
-                 pos_cap=16, max_passes=3, time_cap=8):
+                 pos_cap=16, max_passes=3, time_cap=8,
+                 handoff=False, xtimes=False, near=False):
     """Preference relocation endgame: for each off-preference block (desc by
     w3 gain) try moving it to a higher-preference bay -- first at the SAME
     [entry, exit) interval (tardiness-neutral), then at ALTERNATIVE entry
@@ -3479,7 +3576,11 @@ def _z3_relocate(prob_info, assign, bays, bay_u, w1, w2, w3, raster, deadline,
     _can_place; the delta is computed exactly BEFORE geometry work, so only
     strictly-improving (t, bay) pairs are ever scanned. Removing a block from
     its old bay can never invalidate others (strictly fewer obstacles).
-    Returns (new_assign, new_obj) or (None, None)."""
+    Returns (new_assign, new_obj) or (None, None).
+    jv3 levers (all default-off == byte-exact): handoff exposes same-tick
+    freed footprints in the scoped scan; xtimes adds e2-proc entry thresholds;
+    near exact-gates conservative-mask near misses. All widen the candidate
+    menu only -- every accept is still the same strict full-objective gate."""
     blocks_data = prob_info["blocks"]
     n_bays = len(bays)
     if n_bays < 2 or raster is None or not _HAVE_NUMPY:
@@ -3541,7 +3642,9 @@ def _z3_relocate(prob_info, assign, bays, bay_u, w1, w2, w3, raster, deadline,
                     cands_t.add(alap); cands_t.add(rel_t)
                 for it2 in sched[tj]:
                     a2, e2 = it2[1], it2[2]
-                    for tt in (int(e2), int(a2) - proc):
+                    tts = (int(e2), int(a2) - proc, int(e2) - proc) if xtimes \
+                        else (int(e2), int(a2) - proc)
+                    for tt in tts:
                         if rel_t <= tt <= t_hi:
                             cands_t.add(tt)
 
@@ -3559,17 +3662,14 @@ def _z3_relocate(prob_info, assign, bays, bay_u, w1, w2, w3, raster, deadline,
                         continue
                     e_new = t + proc
                     relx = _time_overlap_rel(sched[tj], t, e_new)
-                    actives = [(b.block_id, b.orient_idx, b.x, b.y)
-                               for b, _a2, _e2 in relx]
+                    actives = _scan_actives(relx, t, e_new, handoff)
                     for oi in orients:
                         if not _orient_fits(blk, oi, bay):
                             continue
-                        feas, cx0, cy0, occ_fp = raster.scan_scoped(
-                            tj, actives, bi, oi)
-                        if feas is None or not feas.any():
+                        cells = _scoped_cells(raster, tj, actives, bi, oi,
+                                              near=near)
+                        if not cells:
                             continue
-                        cells = _order_cells(raster, feas, cx0, cy0, bi, oi,
-                                             raster.W[tj], occ_fp, True, None)
                         tried = 0
                         for (x, y) in cells:
                             nb = _mkblock(bi, blk, x, y, oi)
@@ -3603,6 +3703,341 @@ def _z3_relocate(prob_info, assign, bays, bay_u, w1, w2, w3, raster, deadline,
         return None, None
     o = _objective(cur, blocks_data, bays, bay_u, w1, w2, w3)[0]
     return cur, o
+
+
+def _w2_rebalance(prob_info, assign, bays, bay_u, w1, w2, w3, raster, deadline,
+                  pos_cap=32, max_passes=6, time_cap=12, try_cap=48,
+                  handoff=False, xtimes=False, near=False):
+    """jv2 Stage-1f: workload-imbalance (Z2) sibling of _z3_relocate. The 90s
+    ledger showed ~0.6M of pure w2 mass plus ~3.1M of zero-tardy w2+w3 loss
+    that NO existing operator can touch: _z3_relocate only moves off-pref
+    blocks toward higher-preference bays, so a block already in its preferred
+    bay can never move to relieve the max u*load pair, and obj2 = floor(max
+    pairwise gap) sits untouched on the converged small instances (prob_2 is
+    100%% w2). Here the move menu is ANY block x ANY target bay whose combined
+    budget  w2*(im0 - im2) + w3*(pref_tj - pref_cb)  is positive (a preference
+    LOSS is paid iff the imbalance gain covers it), and a move commits only
+    when  w1*added_tardiness < budget  -- the same strict full-objective
+    arithmetic as _z3_relocate, so every commit strictly improves the internal
+    objective. Placement search is the _z3_relocate idiom verbatim
+    (same-interval first, then bay-event times, raster scoped scan +
+    _can_place exact gate). Returns (new_assign, new_obj) or (None, None)."""
+    blocks_data = prob_info["blocks"]
+    n_bays = len(bays)
+    if n_bays < 2 or raster is None or not _HAVE_NUMPY:
+        return None, None
+    cur = {bi: dict(a) for bi, a in assign.items()}
+    sched, bay_loads = _rebuild_sched(cur, blocks_data, n_bays)
+
+    def imbal(loads):
+        return math.floor(max(
+            abs(bay_u[p] * loads[p] - bay_u[q] * loads[q])
+            for p in range(n_bays) for q in range(n_bays) if p != q))
+
+    moved_any = False
+    for _pass in range(max_passes):
+        im0 = imbal(bay_loads)
+        if im0 <= 0 or time.time() > deadline:
+            break
+        # move menu: (budget, bi, tj) with positive combined w2+w3 budget
+        menu = []
+        for bi, a in cur.items():
+            blk = blocks_data[bi]
+            wl = blk["workload"]
+            if wl <= 0:
+                continue
+            prefs = blk["bay_preferences"]
+            cb = a["bay_id"]
+            for tj in range(n_bays):
+                if tj == cb:
+                    continue
+                loads2 = list(bay_loads)
+                loads2[cb] -= wl
+                loads2[tj] += wl
+                budget = (w2 * (im0 - imbal(loads2))
+                          + w3 * (prefs[tj] - prefs[cb]))
+                if budget > 1e-9:
+                    menu.append((budget, bi, tj))
+        if not menu:
+            break
+        menu.sort(reverse=True)
+        pass_moved = False
+        for budget, bi, tj in menu[:try_cap]:
+            if time.time() > deadline:
+                break
+            a = cur[bi]
+            cb = a["bay_id"]
+            if cb == tj:
+                continue                     # moved earlier this pass
+            blk = blocks_data[bi]
+            wl = blk["workload"]
+            prefs = blk["bay_preferences"]
+            # re-verify against CURRENT loads (earlier commits shift them)
+            loads2 = list(bay_loads)
+            loads2[cb] -= wl
+            loads2[tj] += wl
+            budget = (w2 * (imbal(bay_loads) - imbal(loads2))
+                      + w3 * (prefs[tj] - prefs[cb]))
+            if budget <= 1e-9:
+                continue
+            entry, exit_t = a["entry_time"], a["exit_time"]
+            proc = exit_t - entry
+            due = int(blk["due_date"])
+            rel_t = int(blk["release_time"])
+            cur_tard = max(0, exit_t - due)
+            bay = bays[tj]
+            orients = [oi for oi in _unique_orients(blk)
+                       if _orient_fits(blk, oi, bay)]
+            if not orients:
+                continue
+            t_hi = due - proc + cur_tard + int(budget / max(w1, 1e-9))
+            cands_t = {entry}
+            alap = due - proc
+            if rel_t <= alap:
+                cands_t.add(alap)
+                cands_t.add(rel_t)
+            for it2 in sched[tj]:
+                a2, e2 = it2[1], it2[2]
+                tts = (int(e2), int(a2) - proc, int(e2) - proc) if xtimes \
+                    else (int(e2), int(a2) - proc)
+                for tt in tts:
+                    if rel_t <= tt <= t_hi:
+                        cands_t.add(tt)
+
+            def dtard(t):
+                return max(0, t + proc - due) - cur_tard
+
+            times = sorted(cands_t, key=lambda t: (t != entry, dtard(t), -t))
+            done = False
+            for t in times[:time_cap]:
+                if w1 * dtard(t) - budget >= -1e-9:
+                    continue
+                e_new = t + proc
+                relx = _time_overlap_rel(sched[tj], t, e_new)
+                actives = _scan_actives(relx, t, e_new, handoff)
+                for oi in orients:
+                    cells = _scoped_cells(raster, tj, actives, bi, oi,
+                                          near=near)
+                    if not cells:
+                        continue
+                    tried = 0
+                    for (x, y) in cells:
+                        nb = _mkblock(bi, blk, x, y, oi)
+                        if _can_place(bay, relx, nb, t, e_new):
+                            sched[cb] = [it for it in sched[cb]
+                                         if it[0].block_id != bi]
+                            sched[tj].append((nb, t, e_new,
+                                              nb.bounding_rect()))
+                            bay_loads[cb] -= wl
+                            bay_loads[tj] += wl
+                            a["bay_id"] = tj
+                            a["x"] = int(x)
+                            a["y"] = int(y)
+                            a["orient_idx"] = oi
+                            a["entry_time"] = int(t)
+                            a["exit_time"] = int(e_new)
+                            pass_moved = True
+                            moved_any = True
+                            done = True
+                            break
+                        tried += 1
+                        if tried >= pos_cap:
+                            break
+                    if done:
+                        break
+                if done or time.time() > deadline:
+                    break
+        if not pass_moved:
+            break
+    if not moved_any:
+        return None, None
+    o = _objective(cur, blocks_data, bays, bay_u, w1, w2, w3)[0]
+    return cur, o
+
+
+def _z3_endgame(prob_info, base, ob, bays, bay_u, w1, w2, w3, raster,
+                deadline, push):
+    """jv2 Stage-1b: legacy-first Z3 endgame. Pass 1 is the v13 default-cap
+    _z3_relocate call, byte-identical to the block it replaces (result pushed
+    first, so every banked winner that came out of this endgame is reproduced
+    exactly -- prob_34's z3 product regression-proof by construction). Pass 2
+    re-runs from pass 1's result with raised caps (48/8/16 vs 16/3/8): the
+    default caps exhaust in seconds, while on early-converged zero-tardy
+    instances this endgame owns the whole remaining window (the improve cycles
+    return at convergence, not at z3_at). Pass 2 fires only where the
+    incumbent's own split says the non-w1 mass is worth chasing
+    (zshare >= 0.12, n < 250) -- runtime signals only, never prob indices, so
+    the same class self-selects on the hidden test set."""
+    if raster is None or time.time() >= deadline - 0.5:
+        return
+    cur, cur_o = base, ob
+    try:
+        rz, oz = _z3_relocate(prob_info, cur, bays, bay_u,
+                              w1, w2, w3, raster, deadline)
+        if rz is not None and oz < cur_o - 1e-9:
+            push(oz, rz, force=True)
+            cur, cur_o = rz, oz
+    except Exception:
+        return
+    blocks_data = prob_info["blocks"]
+    if time.time() >= deadline - 1.0 or len(blocks_data) >= 250:
+        return
+    try:
+        o, r1, r2, r3 = _objective(cur, blocks_data, bays, bay_u, w1, w2, w3)
+        if o <= 0.0 or (w2 * r2 + w3 * r3) / o < 0.12:
+            return
+        rz, oz = _z3_relocate(prob_info, cur, bays, bay_u,
+                              w1, w2, w3, raster, deadline,
+                              pos_cap=48, max_passes=8, time_cap=16,
+                              handoff=True, xtimes=True, near=False)
+        if rz is not None and oz < cur_o - 1e-9:
+            push(oz, rz, force=True)
+            cur, cur_o = rz, oz
+        # Stage-1f: Z2 rebalance -- the only operator that can move a
+        # preferred-bay block to relieve the max u*load pair (pure-w2
+        # residuals are invisible to every other mover).
+        if time.time() < deadline - 1.0 and r2 > 0:
+            rw, ow = _w2_rebalance(prob_info, cur, bays, bay_u,
+                                   w1, w2, w3, raster, deadline,
+                                   handoff=True, xtimes=True, near=False)
+            if rw is not None and ow < cur_o - 1e-9:
+                push(ow, rw, force=True)
+    except Exception:
+        pass
+
+
+def _lahc_search(prob_info, seed_assign, seed_obj, bays, bay_u, w1, w2, w3,
+                 raster, deadline, push, inbox=None, seed=31337,
+                 L=50, ruin_lo=0.20, ruin_hi=0.40, forced=True):
+    """jv2 Stage-2 (h19 Imp5): Late-Acceptance Hill Climbing over
+    ruin-and-recreate moves -- the campaign's first uphill-accepting search,
+    aimed at the deterministic-basin-stuck instances (31/39-class). Accepts a
+    rebuild iff obj <= hist[i % L] (or <= current), so bounded uphill moves
+    survive long enough to hop basins; `hist` is the classic length-L late
+    list. Ruin rotates three modes: (0) one-bay time-slice via
+    _destroy_window, (1) tardy cluster + early co-bay neighbours via
+    _destroy_tardy, (2) worst-contribution blocks by w1*tard + w3*offpref
+    (falls back to random on contribution-free incumbents). Rebuild is the
+    _improve repair idiom verbatim (_repair_order -> _place_block ->
+    _force_place backstop). ONLY verified best-seen is pushed -- the
+    portfolio's incumbent chain is never exposed to uphill moves. Fixed seed,
+    no wall-clock re-rolls (determinism law); a better island incumbent from
+    `inbox` is adopted ONLY as a restart point after >60 stagnant rounds.
+    Returns (best_assign, best_obj)."""
+    blocks_data = prob_info["blocks"]
+    n = len(blocks_data)
+    n_bays = len(bays)
+    rng = random.Random(seed)
+    dues = [int(b["due_date"]) for b in blocks_data]
+    prefs_of = [b["bay_preferences"] for b in blocks_data]
+    prefmax = [max(p) for p in prefs_of]
+
+    cur = {k: dict(v) for k, v in seed_assign.items()}
+    cur_obj = seed_obj
+    best = {k: dict(v) for k, v in seed_assign.items()}
+    best_obj = seed_obj
+    hist = [seed_obj] * max(2, int(L))
+    i = 0
+    stagn = 0
+    naccept = 0
+    while time.time() < deadline:
+        # Ride the island broadcast EVERY iteration: the W1 seed is weak
+        # (AREA build ~2x the W0 basin), so ruin-recreate must refine the
+        # strongest KNOWN incumbent, not W1's own. Adopt a strictly-better
+        # global-best as the working point (and as best) the instant it
+        # arrives; W0/W2 stream their strong incumbent mid-run. This is what
+        # lets LAHC attack sub-10.93M on prob_31 instead of orbiting 18M.
+        if inbox is not None:
+            got = None
+            try:
+                while True:
+                    got = inbox.get_nowait()
+            except Exception:
+                pass
+            if got is not None and got[0] < best_obj - 1e-9:
+                cur = {k: dict(v) for k, v in got[1].items()}
+                cur_obj = got[0]
+                best = {k: dict(v) for k, v in got[1].items()}
+                best_obj = got[0]
+                hist = [cur_obj] * len(hist)
+                stagn = 0
+        mode = i % 3
+        removed = None
+        if mode == 0:
+            removed = _destroy_window(cur, blocks_data, rng)
+        elif mode == 1:
+            k = max(2, int(ruin_lo * n / 2))
+            removed = _destroy_tardy(cur, blocks_data, k, rng)
+        if not removed:
+            contrib = sorted(
+                ((w1 * max(0.0, a["exit_time"] - dues[bi])
+                  + w3 * (prefmax[bi] - prefs_of[bi][a["bay_id"]]), bi)
+                 for bi, a in cur.items()), reverse=True)
+            k = max(3, int(rng.uniform(ruin_lo, ruin_hi) * n * 0.5))
+            if contrib and contrib[0][0] > 0:
+                removed = set(bi for c, bi in contrib[:k] if c > 0)
+                if len(removed) < 3:
+                    removed |= set(rng.sample(list(cur), min(3, len(cur))))
+            else:
+                removed = set(rng.sample(list(cur), min(k, len(cur))))
+        cap = max(8, int(ruin_hi * n))
+        if len(removed) > cap:
+            removed = set(list(removed)[:cap])
+
+        work = {bi: dict(a) for bi, a in cur.items() if bi not in removed}
+        sched, bay_loads = _rebuild_sched(work, blocks_data, n_bays)
+        rem_order = _repair_order(removed, blocks_data, i % 4, rng)
+        ok = True
+        for bi in rem_order:
+            if time.time() > deadline:
+                ok = False
+                break
+            blk = blocks_data[bi]
+            place = _place_block(bi, blk, bays, sched, bay_loads, bay_u,
+                                 w1, w2, w3, forced=forced,
+                                 slot_time_cap=40, slot_pos_cap=30,
+                                 raster=raster)
+            if place is None:
+                place = _force_place(bi, blk, bays, sched)
+            _add(sched, bay_loads, work, bi, blk, place)
+        if not ok or len(work) != n:
+            break
+        new_obj = _objective(work, blocks_data, bays, bay_u, w1, w2, w3)[0]
+        v = i % len(hist)
+        if new_obj <= hist[v] + 1e-9 or new_obj <= cur_obj + 1e-9:
+            cur = work
+            cur_obj = new_obj
+            naccept += 1
+        hist[v] = cur_obj
+        i += 1
+        if new_obj < best_obj - 1e-9:
+            best_obj = new_obj
+            best = {k: dict(v) for k, v in work.items()}
+            stagn = 0
+            if push is not None:
+                push(best_obj, best)
+        else:
+            stagn += 1
+            if stagn > 60:
+                stagn = 0
+                if inbox is not None:
+                    got = None
+                    try:
+                        while True:
+                            got = inbox.get_nowait()
+                    except Exception:
+                        pass
+                    if got is not None and got[0] < best_obj - 1e-9:
+                        cur = {k: dict(v) for k, v in got[1].items()}
+                        cur_obj = got[0]
+                        best = {k: dict(v) for k, v in got[1].items()}
+                        best_obj = got[0]
+                        hist = [cur_obj] * len(hist)
+    import os as _os
+    if _os.environ.get("OGC_DEBUG"):
+        print(f"[lahc] iters={i} accepts={naccept} best={best_obj:.1f} "
+              f"(seed {seed_obj:.1f})", flush=True)
+    return best, best_obj
 
 
 # -----------------------------------------------------------------------------
@@ -4175,14 +4610,8 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
             mid2 = t_start + 0.85 * window
             cycles([(seed + 1, 1.0, mid2, True, 0),
                     (seed + 2, 3.0, z3_at, True, 1)])
-        if raster is not None and time.time() < deadline - 0.5:
-            try:
-                rz, oz = _z3_relocate(prob_info, base, bays, bay_u,
-                                      w1, w2, w3, raster, deadline)
-                if rz is not None and oz < ob - 1e-9:
-                    push(oz, rz, force=True)
-            except Exception:
-                pass
+        _z3_endgame(prob_info, base, ob, bays, bay_u, w1, w2, w3, raster,
+                    deadline, push)
 
     def polish_v13(assign, seed, wholebay=False):
         """v17 RESTORATION polish: byte-clone of v13's polish -- improve ->
@@ -4217,14 +4646,8 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
             o2, r2 = improve(base, seed + 1, until=z3_at)
             if o2 < ob:
                 base, ob = r2, o2
-        if raster is not None and time.time() < deadline - 0.5:
-            try:
-                rz, oz = _z3_relocate(prob_info, base, bays, bay_u,
-                                      w1, w2, w3, raster, deadline)
-                if rz is not None and oz < ob - 1e-9:
-                    push(oz, rz, force=True)
-            except Exception:
-                pass
+        _z3_endgame(prob_info, base, ob, bays, bay_u, w1, w2, w3, raster,
+                    deadline, push)
 
     def pick_alts(cands, k=2, cap=2.0):
         """v15 r2a: runner-up DISTINCT constructions for harvest re-seeding.
@@ -4525,6 +4948,16 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
             # the post-construction reserve.
             _, a = build(_area_order(blocks_data), True)
             polish(a, seed=777)
+            # jv2c KILLED (h19 Imp5 LAHC): the mechanism is dormant
+            # (`_lahc_search` kept for provenance). Measured on prob_31 @300s:
+            # riding the island inbox, LAHC adopts W0's 10.93M basin but makes
+            # ZERO improving ruin-recreate accepts in 38 iters -- the residual
+            # is ~all w3 (obj3=10733) and _place_block already respects
+            # preference, so no rebuild beats the deterministic basin. Weak-seed
+            # (no inbox) orbits 18.5M. Verdict: refine-by-ruin cannot crack this
+            # class; prob_31's w3 is the target for the exact w3-aware model
+            # (Stage 1c `_exact_pack_bay`), not stochastic search. Reverted to
+            # the legacy AREA basin so no forced-non-giant W1 winner regresses.
         elif wid == 2:
             # Basin lottery: jittered EDD/AREA multi-start with a different rng
             # than W0's, improve the best. Samples more of the construction
@@ -4614,6 +5047,8 @@ def _worker_main(wid, prob_info, timelimit, t_start, q, inbox=None):
     try:
         _reset_caches()
         state = {"best": float("inf")}
+        import os as _os
+        _push_dbg = bool(_os.environ.get("OGC_DEBUG"))
 
         def push(obj, assign, force=False):
             # Push every new incumbent immediately: improvements are sparse
@@ -4621,6 +5056,11 @@ def _worker_main(wid, prob_info, timelimit, t_start, q, inbox=None):
             if obj >= state["best"] - 1e-9 and not force:
                 return
             state["best"] = min(state["best"], obj)
+            if _push_dbg:
+                # jv2 Stage-2.0 attribution probe: match the winning objective
+                # printed by bench.py to the last wid that pushed it.
+                print(f"[push] wid={wid} obj={obj:.1f} "
+                      f"t={time.time() - t_start:.1f}", flush=True)
             try:
                 q.put((obj, assign))
             except Exception:
@@ -4633,6 +5073,90 @@ def _worker_main(wid, prob_info, timelimit, t_start, q, inbox=None):
                       inbox=inbox)
     except Exception:
         pass
+
+
+def _parent_tail_polish(prob_info, cands, bays, bay_u, w1, w2, w3, tail_end):
+    """jv2 Stage-1a: spend the WHOLE parent tail (drain end -> hard_stop-2s,
+    ~40s at 750s) on the non-w1 mass, not one 5s default-cap z3 pass. The
+    workers are already terminated here -- cores and RAM are idle. Alternates
+    _z3_relocate (raised caps) with _repack_xbay group relocation (the
+    chain-swap mover that otherwise never fires on zero-tardy incumbents,
+    since _improve's repack rounds gate on best_tardy > 0) on the current best
+    candidate. Every strictly better full-objective result is INSERTED at the
+    head of `cands`; the previous head stays next in line, so a failed
+    official verify costs one ~0.15s verify, never correctness (same contract
+    as the v13 #3c pass this replaces). Ends early after one full z+x
+    alternation with no accept. Returns the accept count (OGC_DEBUG)."""
+    if not (_HAVE_NUMPY and cands and cands[0][0] < float("inf")):
+        return 0
+    if time.time() >= tail_end - 2.0:
+        return 0
+    blocks_data = prob_info["blocks"]
+    naccept = 0
+    try:
+        raster = _Raster(prob_info, bays)
+        rng = random.Random(20260708)
+        stale = False
+        while time.time() < tail_end - 2.0 and not stale:
+            stale = True
+            rz, oz = _z3_relocate(prob_info, cands[0][1], bays, bay_u,
+                                  w1, w2, w3, raster,
+                                  min(tail_end, time.time() + 8.0),
+                                  pos_cap=48, max_passes=8, time_cap=16,
+                                  handoff=True, xtimes=True, near=False)
+            if rz is not None and oz < cands[0][0] - 1e-9:
+                cands.insert(0, (oz, rz))
+                naccept += 1
+                stale = False
+            if time.time() >= tail_end - 2.0:
+                break
+            rx = _repack_xbay(prob_info, cands[0][1], bays, bay_u,
+                              w1, w2, w3, raster, rng,
+                              min(tail_end, time.time() + 6.0))
+            if rx is not None:
+                ox = _objective(rx, blocks_data, bays, bay_u, w1, w2, w3)[0]
+                if ox < cands[0][0] - 1e-9:
+                    cands.insert(0, (ox, rx))
+                    naccept += 1
+                    stale = False
+            if time.time() >= tail_end - 2.0:
+                break
+            rw, ow = _w2_rebalance(prob_info, cands[0][1], bays, bay_u,
+                                   w1, w2, w3, raster,
+                                   min(tail_end, time.time() + 6.0),
+                                   handoff=True, xtimes=True, near=False)
+            if rw is not None and ow < cands[0][0] - 1e-9:
+                cands.insert(0, (ow, rw))
+                naccept += 1
+                stale = False
+        # jv2c-1c KILLED (_exact_pack_bay w3-aware whole-bay tail shot): measured
+        # on prob_31 (status=FEASIBLE, before==after, 78-block bay) AND prob_22
+        # (status=OPTIMAL, before==after, 49-block bay -- CP-SAT PROVED the bay
+        # is already optimal). The stuck-instance w3 residuals are a structural
+        # floor: blocks cannot move nearer their preferred bay without adding
+        # tardiness elsewhere. Both the stochastic (LAHC) and exact whole-bay
+        # attacks confirm it. Reverted; the tail keeps only the cheap obj-gated
+        # z3 / xbay / w2 alternation above.
+        # Runner-up shot: only if #2's non-w1 mass could mathematically cover
+        # its gap to #1 (otherwise no z3/xbay outcome can overtake).
+        if len(cands) > 1 and time.time() < tail_end - 10.0:
+            o2nd, a2nd = cands[1]
+            if o2nd < float("inf"):
+                _, r1, r2, r3 = _objective(a2nd, blocks_data, bays, bay_u,
+                                           w1, w2, w3)
+                if w2 * r2 + w3 * r3 > o2nd - cands[0][0]:
+                    rz, oz = _z3_relocate(prob_info, a2nd, bays, bay_u,
+                                          w1, w2, w3, raster,
+                                          min(tail_end, time.time() + 8.0),
+                                          pos_cap=48, max_passes=8,
+                                          time_cap=16,
+                                          handoff=True, xtimes=True, near=False)
+                    if rz is not None and oz < cands[0][0] - 1e-9:
+                        cands.insert(0, (oz, rz))
+                        naccept += 1
+    except Exception:
+        pass
+    return naccept
 
 
 def _algorithm_portfolio(prob_info, timelimit, t_start):
@@ -4738,26 +5262,20 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
                   fallback))
     cands.sort(key=lambda c: c[0])
     hard_stop = t_start + timelimit - 1.0
-    # v13 #3c: parent-side Z3 relocation on the winning candidate. Workers run
-    # the pass inside polish, but a W0 (v9-replica) win never sees it -- this
-    # catches that case. Cheap (~seconds, obj-gated); the relocated candidate
-    # goes FIRST in the verify order and the original stays next in line, so a
-    # failed official check costs one verify, never correctness.
-    if _HAVE_NUMPY and cands and cands[0][0] < float("inf"):
-        try:
-            z_dl = min(hard_stop - 2.0, time.time() + 5.0)
-            if z_dl > time.time() + 1.0:
-                rz, oz = _z3_relocate(prob_info, cands[0][1], bays, bay_u,
-                                      w1, w2, w3, _Raster(prob_info, bays),
-                                      z_dl)
-                if rz is not None and oz < cands[0][0] - 1e-9:
-                    cands.insert(0, (oz, rz))
-        except Exception:
-            pass
+    # jv2 Stage-1a: parent tail loop (z3 + xbay alternation, raised caps) on
+    # the winning candidate, replacing the v13 #3c single 5s pass. Same
+    # insert-at-head contract: original candidates stay next in line.
+    _ntail = 0
+    try:
+        _ntail = _parent_tail_polish(prob_info, cands, bays, bay_u,
+                                     w1, w2, w3, hard_stop - 2.0)
+    except Exception:
+        pass
     if _dbg:
         _el = time.time() - t_start
         _objs = sorted(c[0] for c in cands)[:5]
-        print(f"[parent] ncands={len(cands)} elapsed={_el:.1f} hard_stop_in="
+        print(f"[parent] ncands={len(cands)} tail_accepts={_ntail} "
+              f"elapsed={_el:.1f} hard_stop_in="
               f"{hard_stop - time.time():.1f} best5={[f'{o:.3g}' for o in _objs]}",
               flush=True)
     _nver = 0
@@ -4769,7 +5287,13 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
     abs_stop = t_start + timelimit - 0.3
     for _, assign in cands:
         now = time.time()
-        if now > abs_stop:
+        # v2 fix: the abs_stop break used to fire BEFORE the first verify, so
+        # an end-phase drain overrun (measured: v14 60s smoke on a loaded
+        # machine, elapsed 70s -> prob_39 returned the 1.9e9 fallback while a
+        # ready 13.98M candidate sat unverified) hit the exact catastrophe the
+        # comment above says this guard prevents. Verify the single best
+        # UNCONDITIONALLY; abs_stop only bounds verifies after the first.
+        if _nver >= 1 and now > abs_stop:
             break
         if _nver >= 1 and now > hard_stop:
             if _dbg:
