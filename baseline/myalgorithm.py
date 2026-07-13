@@ -3351,7 +3351,7 @@ def _fluid_targets(prob_info, bays, c_eff, mode):
 def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
                         kappa=1.0, gamma=0.5, rng=None, cand_cap=12,
                         alpha=0.0, score_pos=False, eps=0.15, targets=None,
-                        beam=False, beam_m=4, nearmiss=0):
+                        beam=False, beam_m=4, nearmiss=0, nm_compete=False):
     """Event-driven admission construction using the raster full-position scan.
 
     Walk event times (releases + scheduled exits); at each event admit queued
@@ -3427,9 +3427,23 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
                 if not _orient_fits(blk, oi, bay):
                     continue
                 feas, cx0, cy0 = raster.scan(bay_id, bi, oi)
-                if feas is None or not feas.any():
+                if feas is None:
                     continue
-                cells = _order_cells(raster, feas, cx0, cy0, bi, oi,
+                grid = feas
+                budget = cap
+                if nm_compete and nearmiss > 0:
+                    # v20b-2: near-miss anchors COMPETE in the main contact-
+                    # ranked pass instead of waiting for total failure --
+                    # near cells are contact-richer (deeper nesting) and may
+                    # outrank mask-feasible ones. Every candidate is still
+                    # exact-gated by _can_place. nm_compete=False = byte-inert.
+                    near = raster.scan_near(bay_id, bi, oi)
+                    if near is not None and near.any():
+                        grid = _np.logical_or(feas, near)
+                        budget = cap + nearmiss
+                if not grid.any():
+                    continue
+                cells = _order_cells(raster, grid, cx0, cy0, bi, oi,
                                      raster.W[bay_id], occ_fp, score_pos, rng)
                 tried = 0
                 for (x, y) in cells:
@@ -3437,7 +3451,7 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
                     if _can_place(bay, rel, nb, t, exit_t):
                         return (bay_id, x, y, oi, t, exit_t)
                     tried += 1
-                    if tried >= cap:
+                    if tried >= budget:
                         break
         # v20 Improvement A: near-miss recovery. The conservative mask found
         # no clear anchor; try anchors it rejects by <= near_k dilated cells,
@@ -4721,13 +4735,13 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
             pb = min(60.0, 0.12 * window)
             tick_dl = t_start + 0.55 * window
 
-            def ticket(tg, bm, nm, kap, al):
+            def ticket(tg, bm, nm, kap, al, cmp=False):
                 raster.reset()
                 a_ = _dispatch_construct(
                     prob_info, bays, bay_u, w1, w2, w3,
                     min(tick_dl, deadline), raster, kappa=kap, gamma=0.5,
                     alpha=al, score_pos=True, targets=tg, beam=bm,
-                    nearmiss=nm)
+                    nearmiss=nm, nm_compete=cmp)
                 o_ = iobj(a_)
                 push(o_, a_)
                 cands.append((o_, a_))
@@ -4735,11 +4749,21 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
             # nm+beam config lottery (measured grid, heuristic_20 Results:
             # per-instance winners vary -- 31 wants kappa 0.5, 33 wants 2.0 --
             # so rotate a diverse list, min-wins keeps the best).
-            for kap, al in ((0.5, 0.5), (2.0, 0.5), (1.0, 0.0), (0.5, 1.0),
-                            (4.0, 0.0), (1.0, 0.5), (0.5, 0.0), (2.0, 1.0)):
+            # v20b-2: 4 near-compete tickets first (probe_20b2: raw compete
+            # builds beat the FULL 600s pipeline on 31/39, -0.3..-1.5M; 27
+            # prefers fallback), then the v20a 8-config fallback rotation
+            # VERBATIM (each ticket is deterministic per config, so the
+            # banked draws are preserved as long as they fit the time cap);
+            # min-wins picks per instance.
+            for kap, al, cmp in ((0.5, 0.5, True), (2.0, 0.5, True),
+                                 (0.5, 1.0, True), (1.0, 0.0, True),
+                                 (0.5, 0.5, False), (2.0, 0.5, False),
+                                 (1.0, 0.0, False), (0.5, 1.0, False),
+                                 (4.0, 0.0, False), (1.0, 0.5, False),
+                                 (0.5, 0.0, False), (2.0, 1.0, False)):
                 if time.time() >= t_start + 0.45 * window:
                     break
-                ticket(None, True, 8, kap, al)
+                ticket(None, True, 8, kap, al, cmp)
             # one calibrated-plan ticket (cheap diversification; the gate is
             # the only mechanism that can hold sacrificed blocks on the
             # structurally-oversubscribed pair 38/27).

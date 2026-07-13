@@ -216,6 +216,27 @@ the queue's remaining density lever is 20b-2 (near cells competing in the
 MAIN scoring pass of the dispatcher, where nm demonstrably pays) and 20b-4
 (MPC joint admission).
 
+### 20b-2 RESULT (2026-07-13, Mac): near cells competing in the MAIN pass —
+CONFIRMED WIN. `nm_compete` flag in `_dispatch_construct.try_place`: near
+anchors merged into the contact-ranked candidate grid (budget cap+nm) instead
+of firing only on total failure; byte-inert when off (grid=feas, budget=cap).
+W1 explorer rotation = 4 compete tickets + the v20a 8-config fallback
+rotation VERBATIM (deterministic per config ⇒ banked draws preserved;
+min-wins picks per instance).
+
+Raw ablation (`probe_20b2.py`, best of 4 configs, deterministic): 31
+−278,414 / 39 −1,470,793 / 33 −562,789 / 27 +50,236 (fallback keeps 27).
+The raw 4–8s compete builds BEAT the full 600s pipeline on 31/39.
+
+End-to-end @600s vs SAME-MACHINE v20 controls: 31 = 9,232,297 (−356,463);
+39 = 9,726,907 (−75,629; −526,165 below the banked bench row); 27 =
+27,225,747 (banked value byte-reproduced — ticket-preservation design
+works); 26 = 9,489,882 (−163,608 vs banked). Protect: prob_1 @60s = 18,357
+byte-exact. Remaining eligible spots (33/23/30/38) pending; 33's raw −563k
+suggests more. NOTE 39's 600s value equals its raw compete build — polish
+added zero on top, consistent with the 20b-1 finding; the polish-flatness
+lever is still open (20b-4 MPC or throughput).
+
 Cross-machine note (same code, @600s): Mac vs the v20a bench machine —
 39: 9,802,536 vs 10,253,072 (Mac −450,536 BETTER); 31: 9,588,760 vs
 9,038,459 (Mac +550,301 worse). Per-instance pacing basins differ by ±0.5M
