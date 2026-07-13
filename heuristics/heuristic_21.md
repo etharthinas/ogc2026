@@ -119,6 +119,32 @@ penalizes upper-layer cells over empty floor) as W1 tickets: **26 −487,249**
 predict post-polish outcome; the currency is basin diversity fed into deep
 polish, protected by min-wins.
 
+### v25 (deep-nestle near_k family) — **GOAL MET: 124,581,895 < 125M**
+
+The 38 diagnostic showed 44–51% of floor area free while 50–90 blocks
+queue, and the reason: near_k=3 recovers only 3-cell mask overlaps while
+38-class blocks have 40+ cell perimeters — deeply-nestled exact-feasible
+anchors were invisible. near_k ∈ {16, 24, 32} tickets (nm cap nk+8) heading
+the W1 rotation produced raw builds BELOW every fully-polished banked cell,
+and polish compounded:
+
+| prob | v25 | v24 | delta |
+|---|---|---|---|
+| 38 | 36,351,493 | 41,646,457 | **−5,294,964** |
+| 39 | 8,389,519 | 10,253,072 | **−1,863,553** |
+| 31 | 8,124,019 | 9,038,459 | **−914,440** |
+| 27 | 24,972,962 | 25,647,585 | **−674,623** |
+| 33 | 7,734,338 | 8,376,814 | **−642,476** |
+| 26 | 8,551,513 | 9,166,241 | **−614,728** |
+| 23 | 2,524,154 | 2,955,426 | **−431,272** |
+| 30 | 3,363,565 | 3,722,720 | **−359,155** |
+
+Net −10,795,211 in one rung. Full-40 = **124,581,895** (row `algorithm
+25`), prob_1 @60s protect byte-exact, myalgorithm.py = v25, commit c407ac1.
+Campaign total v18 → v25: −25.25M, all downstream of refuting ledger_19's
+footprint-density artifact. v26 candidates: near_k upgrade inside the W0/W3
+deep pipelines (still building at near_k=3); per-instance nk adaptation.
+
 ### v24 (ovh into deep pipelines) — NET FLAT, one displacement lesson
 
 All cells flat except 27 REGRESSED +939k: shifting the W0 build deadlines
