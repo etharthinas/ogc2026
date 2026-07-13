@@ -1,3 +1,11 @@
+# myalgorithm_23.py  --  v23 = v22 + (a) MPC build variant in the W0-reclaimed
+# deep pipeline on eligible giants (mpc's -832k raw on 38 never won from W1's
+# shallow ticket; the deep improve is what converts raw builds into banked
+# cells), (b) overhang-aware anchor scoring (_order_cells ovh_bay: penalize
+# upper-layer cells over empty floor -- the 0.05-0.10 union-poisoning band),
+# explorer-only, inert by default.
+# ---------------------------------------------------------------------------
+# (v22 header below, kept verbatim for provenance)
 # myalgorithm_22.py  --  v22 = v21 + MPC JOINT ADMISSION (heuristic_21
 # Improvement C): at deep-queue beam events, a CP-SAT max-weight
 # compatible-set fill (footprint-union-disjoint candidate cells, exact
@@ -3102,13 +3110,18 @@ def _neighbor_field(occ_fp):
     return N
 
 
-def _order_cells(raster, feas, cx0, cy0, bi, oi, W, occ_fp, prefer_contact, rng):
+def _order_cells(raster, feas, cx0, cy0, bi, oi, W, occ_fp, prefer_contact, rng,
+                 ovh_bay=None):
     """Order feasible raster anchors best-first as a list of (x, y). Default is
     v12's bottom-left (low y=r, then low x=c). With `prefer_contact` and a
     non-empty occupancy, rank by perimeter-contact first (block footprint dotted
     with the neighbour-field), BL as tie-break -- the density lever, shared by
     the dispatcher and the raster-repair improver. `rng` jitters ties (lottery).
-    When prefer_contact is False and rng is None this reproduces v12 exactly."""
+    When prefer_contact is False and rng is None this reproduces v12 exactly.
+    v23: ovh_bay=bay_id enables OVERHANG-AWARE scoring: penalize anchors whose
+    upper-layer cells hang over currently-EMPTY floor (union-poisoning band,
+    measured 0.05-0.10 of bay area: poisoned cells block every later entry
+    below them while covering nothing). Explorer-only (default None = inert)."""
     rc = _np.argwhere(feas)                     # (K,2) as (r,c)
     if len(rc) == 0:
         return []
@@ -3124,6 +3137,19 @@ def _order_cells(raster, feas, cx0, cy0, bi, oi, W, occ_fp, prefer_contact, rng)
         win = _swv(N, (MH, MW))                 # (R,C,MH,MW)
         contact = _np.einsum('rcij,ij->rc', win, bfp)
         cval = contact[r, c].astype(_np.float64)
+        if ovh_bay is not None:
+            mask, _mx, _my = raster.mask(bi, oi)
+            if mask.shape[0] > 1:
+                up = mask[1:].any(axis=0).astype(_np.int32)   # upper layers
+                if up.any():
+                    g0 = raster.occ[ovh_bay].get(0)
+                    H = raster.H[ovh_bay]; Wb = raster.W[ovh_bay]
+                    empty0 = (_np.ones((H, Wb), dtype=_np.int32)
+                              if g0 is None else (g0 == 0).astype(_np.int32))
+                    winE = _swv(empty0, (MH, MW))
+                    poison = _np.einsum('rcij,ij->rc', winE, up)
+                    # each poisoned floor cell costs ~2 contact points
+                    cval = cval - 2.0 * poison[r, c].astype(_np.float64)
         idx = _np.lexsort((bl, -cval))          # primary -cval (desc), then bl
     else:
         idx = _np.argsort(bl)                   # pure BL (== v12 when rng None)
@@ -3362,7 +3388,8 @@ def _fluid_targets(prob_info, bays, c_eff, mode):
 def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
                         kappa=1.0, gamma=0.5, rng=None, cand_cap=12,
                         alpha=0.0, score_pos=False, eps=0.15, targets=None,
-                        beam=False, beam_m=4, nearmiss=0, mpc=False):
+                        beam=False, beam_m=4, nearmiss=0, mpc=False,
+                        ovh=False):
     """Event-driven admission construction using the raster full-position scan.
 
     Walk event times (releases + scheduled exits); at each event admit queued
@@ -3441,7 +3468,8 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
                 if feas is None or not feas.any():
                     continue
                 cells = _order_cells(raster, feas, cx0, cy0, bi, oi,
-                                     raster.W[bay_id], occ_fp, score_pos, rng)
+                                     raster.W[bay_id], occ_fp, score_pos, rng,
+                                     ovh_bay=bay_id if ovh else None)
                 tried = 0
                 for (x, y) in cells:
                     nb = _mkblock(bi, blk, x, y, oi)
@@ -3468,7 +3496,7 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
                     _f, cx0, cy0 = raster.scan(bay_id, bi, oi)
                     cells = _order_cells(raster, near, cx0, cy0, bi, oi,
                                          raster.W[bay_id], occ_fp, score_pos,
-                                         rng)
+                                         rng, ovh_bay=bay_id if ovh else None)
                     tried = 0
                     for (x, y) in cells:
                         nb = _mkblock(bi, blk, x, y, oi)
@@ -4586,9 +4614,20 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                     # family (27/38/39; reclaimed-but-ineligible 40 keeps the
                     # v16 build byte-exact). Full-budget deep improve + whole-
                     # bay phase then run on a measured-better construction.
+                    # v23: + an MPC variant of the same build -- mpc measured
+                    # -832k raw on 38 but never won from W1's shallow ticket;
+                    # HERE the winner feeds the deep pipeline (min-wins).
                     _o0, a0 = dispatch(2.0, 0.5, alpha=0.5, beam=True,
                                        nearmiss=8,
-                                       dl=t_start + 0.30 * window)
+                                       dl=t_start + 0.22 * window)
+                    try:
+                        _o1, a1 = dispatch(2.0, 0.5, alpha=0.5, beam=True,
+                                           nearmiss=8, mpc=True,
+                                           dl=t_start + 0.38 * window)
+                        if _o1 < _o0:
+                            a0 = a1
+                    except Exception:
+                        pass
                 else:
                     _o0, a0 = dispatch(2.0, 0.5, alpha=0.5)
             except Exception:
@@ -4896,13 +4935,14 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
         try:
             tick_dl = t_start + 0.55 * window
 
-            def ticket(tg, bm, nm, kap, al, drng=None, mpc=False):
+            def ticket(tg, bm, nm, kap, al, drng=None, mpc=False,
+                       ovh=False):
                 raster.reset()
                 a_ = _dispatch_construct(
                     prob_info, bays, bay_u, w1, w2, w3,
                     min(tick_dl, deadline), raster, kappa=kap, gamma=0.5,
                     alpha=al, score_pos=True, rng=drng, targets=tg, beam=bm,
-                    nearmiss=nm, mpc=mpc)
+                    nearmiss=nm, mpc=mpc, ovh=ovh)
                 o_ = iobj(a_)
                 push(o_, a_)
                 cands.append((o_, a_))
@@ -4928,6 +4968,12 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                 if time.time() >= tick_dl:
                     break
                 ticket(None, True, 8, kap, al, mpc=True)
+            # v23: overhang-aware tickets (union-poisoning penalty; mixed raw
+            # signal -- 38 -165k, 27 +709k -- min-wins keeps only winners).
+            for kap, al in ((0.5, 1.0), (2.0, 0.5)):
+                if time.time() >= tick_dl:
+                    break
+                ticket(None, True, 8, kap, al, ovh=True)
             _jrng = random.Random(2121)
             ji = 0
             while time.time() < tick_dl and ji < 24:
