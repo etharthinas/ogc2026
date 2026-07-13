@@ -1,3 +1,8 @@
+# myalgorithm_24.py  --  v24 = v23 + overhang variants in the deep
+# pipelines (W0-reclaimed 3-way min, W3-giant 2-way min), numeric ovh
+# weight, W1 weight-4 ovh ticket. Basin-diversity-into-polish thesis.
+# ---------------------------------------------------------------------------
+# (v23 header below, kept verbatim for provenance)
 # myalgorithm_23.py  --  v23 = v22 + (a) MPC build variant in the W0-reclaimed
 # deep pipeline on eligible giants (mpc's -832k raw on 38 never won from W1's
 # shallow ticket; the deep improve is what converts raw builds into banked
@@ -3111,7 +3116,7 @@ def _neighbor_field(occ_fp):
 
 
 def _order_cells(raster, feas, cx0, cy0, bi, oi, W, occ_fp, prefer_contact, rng,
-                 ovh_bay=None):
+                 ovh_bay=None, ovh_w=2.0):
     """Order feasible raster anchors best-first as a list of (x, y). Default is
     v12's bottom-left (low y=r, then low x=c). With `prefer_contact` and a
     non-empty occupancy, rank by perimeter-contact first (block footprint dotted
@@ -3149,7 +3154,8 @@ def _order_cells(raster, feas, cx0, cy0, bi, oi, W, occ_fp, prefer_contact, rng,
                     winE = _swv(empty0, (MH, MW))
                     poison = _np.einsum('rcij,ij->rc', winE, up)
                     # each poisoned floor cell costs ~2 contact points
-                    cval = cval - 2.0 * poison[r, c].astype(_np.float64)
+                    cval = cval - float(ovh_w) * poison[r, c].astype(
+                        _np.float64)
         idx = _np.lexsort((bl, -cval))          # primary -cval (desc), then bl
     else:
         idx = _np.argsort(bl)                   # pure BL (== v12 when rng None)
@@ -3469,7 +3475,8 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
                     continue
                 cells = _order_cells(raster, feas, cx0, cy0, bi, oi,
                                      raster.W[bay_id], occ_fp, score_pos, rng,
-                                     ovh_bay=bay_id if ovh else None)
+                                     ovh_bay=bay_id if ovh else None,
+                                     ovh_w=float(ovh) * 2.0 if ovh else 2.0)
                 tried = 0
                 for (x, y) in cells:
                     nb = _mkblock(bi, blk, x, y, oi)
@@ -3496,7 +3503,8 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
                     _f, cx0, cy0 = raster.scan(bay_id, bi, oi)
                     cells = _order_cells(raster, near, cx0, cy0, bi, oi,
                                          raster.W[bay_id], occ_fp, score_pos,
-                                         rng, ovh_bay=bay_id if ovh else None)
+                                         rng, ovh_bay=bay_id if ovh else None,
+                                         ovh_w=float(ovh) * 2.0 if ovh else 2.0)
                     tried = 0
                     for (x, y) in cells:
                         nb = _mkblock(bi, blk, x, y, oi)
@@ -4617,6 +4625,11 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                     # v23: + an MPC variant of the same build -- mpc measured
                     # -832k raw on 38 but never won from W1's shallow ticket;
                     # HERE the winner feeds the deep pipeline (min-wins).
+                    # v24 lesson (prob_27 +939k): the BUILD-BUDGET PACING of
+                    # this pair is load-bearing -- shifting dls changed the mpc
+                    # build and raw-min fed the deep polish a worse input. The
+                    # v23 timing is restored verbatim; the ovh third build is
+                    # dropped from this stream (measured cost > value here).
                     _o0, a0 = dispatch(2.0, 0.5, alpha=0.5, beam=True,
                                        nearmiss=8,
                                        dl=t_start + 0.22 * window)
@@ -4825,7 +4838,15 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
         if nm_elig:
             try:
                 _o, a = dispatch(1.0, 0.5, alpha=1.0, beam=True, nearmiss=8,
-                                 dl=t_start + 0.3 * window)
+                                 dl=t_start + 0.22 * window)
+                try:
+                    _o2, a2 = dispatch(1.0, 0.5, alpha=1.0, beam=True,
+                                       nearmiss=8, ovh=True,
+                                       dl=t_start + 0.40 * window)
+                    if _o2 < _o:
+                        a = a2
+                except Exception:
+                    pass
                 improve(a, seed=4444, repack_every=2, xbay=True, nearmiss=8)
                 return
             except Exception:
@@ -4970,10 +4991,11 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                 ticket(None, True, 8, kap, al, mpc=True)
             # v23: overhang-aware tickets (union-poisoning penalty; mixed raw
             # signal -- 38 -165k, 27 +709k -- min-wins keeps only winners).
-            for kap, al in ((0.5, 1.0), (2.0, 0.5)):
+            for kap, al, ow in ((0.5, 1.0, True), (2.0, 0.5, True),
+                                (2.0, 0.5, 2.0)):   # ovh=2.0 -> weight 4
                 if time.time() >= tick_dl:
                     break
-                ticket(None, True, 8, kap, al, ovh=True)
+                ticket(None, True, 8, kap, al, ovh=ow)
             _jrng = random.Random(2121)
             ji = 0
             while time.time() < tick_dl and ji < 24:

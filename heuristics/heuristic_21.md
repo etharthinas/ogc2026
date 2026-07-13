@@ -102,3 +102,29 @@ gains, no banked winner lives there). prob_1 @60s protect: byte-exact.
 
 38's residual: obj1=2965 (39.5M of its 41.6M) vs relax@0.7 target 1219.
 27 flat at 1899 obj1. 21b/21c (overhang scoring, MPC) target exactly these.
+
+### 21c = v22 (MPC joint admission, W1 tickets) — 137,384,844 (−251k)
+
+CP-SAT max-weight compatible-set fill (footprint-union-disjoint conflicts,
+_can_place-gated commits) as a 4th beam order. Raw probe: 38 −832k
+@(2.0,0.5), config-dependent elsewhere. Spot: 27 −61k, 30 −190k (through
+polish), 38 flat (the mpc raw advantage never won from W1's shallow ticket).
+
+### 21b+21c deep = v23 (mpc→deep pipeline; overhang tickets) — 135,377,106 (−2.01M)
+
+(a) W0-reclaimed builds plain-nm AND mpc variants, deep pipeline takes the
+raw-min: **27 −1,516,877**. (b) overhang-aware anchor scoring (_order_cells
+penalizes upper-layer cells over empty floor) as W1 tickets: **26 −487,249**
+— the previously-immovable instance. KEY LESSON: raw build quality does NOT
+predict post-polish outcome; the currency is basin diversity fed into deep
+polish, protected by min-wins.
+
+### v24 (ovh into deep pipelines) — NET FLAT, one displacement lesson
+
+All cells flat except 27 REGRESSED +939k: shifting the W0 build deadlines
+(0.22/0.38 → 0.18/0.30/0.42 to fit a third build) changed the mpc build and
+raw-min fed polish a worse input. BUILD-BUDGET PACING IS LOAD-BEARING.
+Reverted to v23 timing verbatim; W3-giant ovh variant + W1 weight-4 ticket
+kept (measured no-harm). Standing law: never re-pace a winning deep
+pipeline's build phase to make room for new variants — add variants only in
+min-wins ticket space.

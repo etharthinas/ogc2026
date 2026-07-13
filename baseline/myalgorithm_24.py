@@ -4625,25 +4625,20 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                     # v23: + an MPC variant of the same build -- mpc measured
                     # -832k raw on 38 but never won from W1's shallow ticket;
                     # HERE the winner feeds the deep pipeline (min-wins).
+                    # v24 lesson (prob_27 +939k): the BUILD-BUDGET PACING of
+                    # this pair is load-bearing -- shifting dls changed the mpc
+                    # build and raw-min fed the deep polish a worse input. The
+                    # v23 timing is restored verbatim; the ovh third build is
+                    # dropped from this stream (measured cost > value here).
                     _o0, a0 = dispatch(2.0, 0.5, alpha=0.5, beam=True,
                                        nearmiss=8,
-                                       dl=t_start + 0.18 * window)
+                                       dl=t_start + 0.22 * window)
                     try:
                         _o1, a1 = dispatch(2.0, 0.5, alpha=0.5, beam=True,
                                            nearmiss=8, mpc=True,
-                                           dl=t_start + 0.30 * window)
+                                           dl=t_start + 0.38 * window)
                         if _o1 < _o0:
-                            a0, _o0 = a1, _o1
-                    except Exception:
-                        pass
-                    # v24: overhang variant joins the min (26's spot lesson:
-                    # raw-worse builds can polish into new basins).
-                    try:
-                        _o2, a2 = dispatch(2.0, 0.5, alpha=0.5, beam=True,
-                                           nearmiss=8, ovh=True,
-                                           dl=t_start + 0.42 * window)
-                        if _o2 < _o0:
-                            a0, _o0 = a2, _o2
+                            a0 = a1
                     except Exception:
                         pass
                 else:
