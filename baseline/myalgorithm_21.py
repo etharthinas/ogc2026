@@ -4720,10 +4720,13 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                     (2.0, 0.5, 0.0, (1.10, "spt"), False),
                     (1.0, 0.5, 0.0, None, True)] + plan
         if nm_elig:
-            # v21: nm+beam tickets first (measured-winning family; configs
-            # complement W1's rotation head).
-            plan = [(2.0, 0.5, 0.5, None, "nmbeam"),
-                    (0.5, 0.5, 1.0, None, "nmbeam")] + plan
+            # v21: nm+beam tickets APPENDED (not prepended: prepending shifted
+            # the rotation + drng stream and displaced prob_26's banked W3
+            # beam-draw winner by +374k -- measured on the first v21 spot).
+            # Appended tickets run only in leftover slot time and leave the
+            # original draw sequence byte-exact.
+            plan = plan + [(2.0, 0.5, 0.5, None, "nmbeam"),
+                           (0.5, 0.5, 1.0, None, "nmbeam")]
         gi = 0
         while True:
             kap, gam, al, ts_, bm = plan[gi % len(plan)]
