@@ -1,3 +1,10 @@
+# myalgorithm_21.py  --  v21 = v20 + near-miss threading through the improver
+# reinsert path (_find_earliest_slot_raster / _repack_window / _improve,
+# default 0 = byte-inert; enabled from the W1 explorer's polish) + W1 slot
+# economics (plan ticket dropped -- gating measured dead in all forms;
+# jittered nm+beam draws instead). See heuristic_21.md.
+# ---------------------------------------------------------------------------
+# (v20 header below, kept verbatim for provenance)
 # myalgorithm_20.py  --  v20 = v18 + plan-explorer W1 slot on the tardy class.
 # See heuristic_20.md. ledger_19's "density-saturated" verdict is REFUTED
 # (footprint metric double-counted stacking; true per-layer burst density is
@@ -693,7 +700,8 @@ def _find_earliest_slot(bay, sched_bay, bi, blk, orients, lb, proc,
 
 
 def _find_earliest_slot_raster(bay, bay_id, sched_bay, bi, blk, orients, lb, proc,
-                               raster, score_pos=True, time_cap=16, pos_cap=28):
+                               raster, score_pos=True, time_cap=16, pos_cap=28,
+                               nearmiss=0):
     """v13 RASTER-WINDOWED REPAIR: earliest feasible (orient,x,y,entry) reached
     by a full-position raster scan instead of AABB-corner enumeration -- the
     density lever inside the improver. For each candidate entry time t, build a
@@ -716,19 +724,37 @@ def _find_earliest_slot_raster(bay, bay_id, sched_bay, bi, blk, orients, lb, pro
         for oi in orients:
             if not _orient_fits(blk, oi, bay):
                 continue
-            feas, cx0, cy0, occ_fp = raster.scan_scoped(bay_id, actives, bi, oi)
-            if feas is None or not feas.any():
-                continue
-            cells = _order_cells(raster, feas, cx0, cy0, bi, oi,
-                                 raster.W[bay_id], occ_fp, score_pos, None)
-            tried = 0
-            for (x, y) in cells:
-                nb = _mkblock(bi, blk, x, y, oi)
-                if _can_place(bay, relx, nb, t, exit_t):
-                    return (oi, x, y, t)
-                tried += 1
-                if tried >= pos_cap:
-                    break
+            if nearmiss > 0:
+                feas, cx0, cy0, occ_fp, near = raster.scan_scoped(
+                    bay_id, actives, bi, oi, want_near=True)
+            else:
+                feas, cx0, cy0, occ_fp = raster.scan_scoped(
+                    bay_id, actives, bi, oi)
+                near = None
+            if feas is not None and feas.any():
+                cells = _order_cells(raster, feas, cx0, cy0, bi, oi,
+                                     raster.W[bay_id], occ_fp, score_pos, None)
+                tried = 0
+                for (x, y) in cells:
+                    nb = _mkblock(bi, blk, x, y, oi)
+                    if _can_place(bay, relx, nb, t, exit_t):
+                        return (oi, x, y, t)
+                    tried += 1
+                    if tried >= pos_cap:
+                        break
+            # v21 Improvement A: near-miss recovery in the improver reinsert
+            # (same exact-gate soundness contract as the v20 dispatcher pass).
+            if near is not None and near.any():
+                cells = _order_cells(raster, near, cx0, cy0, bi, oi,
+                                     raster.W[bay_id], occ_fp, score_pos, None)
+                tried = 0
+                for (x, y) in cells:
+                    nb = _mkblock(bi, blk, x, y, oi)
+                    if _can_place(bay, relx, nb, t, exit_t):
+                        return (oi, x, y, t)
+                    tried += 1
+                    if tried >= nearmiss:
+                        break
     return None
 
 
@@ -1160,7 +1186,7 @@ def _destroy_window(cur, blocks_data, rng):
 
 def _repack_window(prob_info, src, bays, bay_u, w1, w2, w3, raster, rng,
                    deadline, forced=False, k_orders=4, max_destroy=30,
-                   mode='sbay', win_scale=2.0):
+                   mode='sbay', win_scale=2.0, nearmiss=0):
     """Pick the most congested (bay, time-window) from `src`, destroy every block
     of that bay whose [entry,exit) intersects it, and rebuild the destroyed set
     jointly (k trial orders, greedy earliest-feasible raster placement against the
@@ -1257,7 +1283,7 @@ def _repack_window(prob_info, src, bays, bay_u, w1, w2, w3, raster, rng,
             proc = procs[bi]
             slot = _find_earliest_slot_raster(
                 bay, bj, work_bay, bi, blk, _unique_orients(blk),
-                rels[bi], proc, raster, score_pos=True)
+                rels[bi], proc, raster, score_pos=True, nearmiss=nearmiss)
             if slot is None:
                 failed.append(bi)
                 continue
@@ -2246,7 +2272,8 @@ def _exact_pack_bay(prob_info, src, bays, bay_u, w1, w2, w3, raster, rng,
 
 def _improve(prob_info, assignments, bays, bay_u, w1, w2, w3, deadline, forced,
              seed=4242, sa=False, on_best=None, inbox=None, raster=None,
-             repack_every=0, xbay=False, repack_win_scale=2.0, deep=False):
+             repack_every=0, xbay=False, repack_win_scale=2.0, deep=False,
+             nearmiss=0):
     """Basin-hopping destroy/repair. Tracks `best` separately from the working
     `cur`; returns `best` -> monotone in the RESULT. Diversifies destroy mode and
     repair ordering, and applies an escape "kick" (a larger destroy accepted even
@@ -2335,7 +2362,8 @@ def _improve(prob_info, assignments, bays, bay_u, w1, w2, w3, deadline, forced,
             try:
                 work = _repack_window(prob_info, cur, bays, bay_u, w1, w2, w3,
                                       raster, rng, deadline, forced=forced,
-                                      mode=mode, win_scale=ws, max_destroy=md)
+                                      mode=mode, win_scale=ws, max_destroy=md,
+                                      nearmiss=nearmiss)
             except Exception:
                 work = None
             if work is not None and len(work) == n:
@@ -2981,16 +3009,20 @@ class _Raster:
                 return None
         return nc[1]
 
-    def scan_scoped(self, bay, actives, bi, oi):
+    def scan_scoped(self, bay, actives, bi, oi, want_near=False):
         """v13 raster-windowed repair primitive. Feasible-anchor grid for
         placing (bi,oi) in `bay` against ONLY `actives` = [(bi2,oi2,x2,y2),...]
         (the blocks time-overlapping the candidate insertion), WITHOUT touching
         self.occ. Returns (feas (R,C) bool | None, cx0, cy0, occ_fp (H,W) bool).
-        Sound in exactly the same conservative sense as scan()."""
+        Sound in exactly the same conservative sense as scan().
+        v21: want_near=True appends a near-miss anchor grid (0 < scoped
+        overlap count <= near_k) -- consumers MUST exact-gate every anchor."""
         H, W = self.H[bay], self.W[bay]
         mask, cx0, cy0 = self.mask(bi, oi)
         nl, MH, MW = mask.shape
         if MH > H or MW > W:
+            if want_near:
+                return None, cx0, cy0, None, None
             return None, cx0, cy0, None
         R = H - MH + 1; C = W - MW + 1
         layers = {}                            # l -> bool (H,W)
@@ -3011,6 +3043,10 @@ class _Raster:
             if nl2 - 1 > maxL:
                 maxL = nl2 - 1
         if maxL < 0:
+            if want_near:
+                return (_np.ones((R, C), dtype=bool), cx0, cy0,
+                        _np.zeros((H, W), dtype=bool),
+                        _np.zeros((R, C), dtype=bool))
             return _np.ones((R, C), dtype=bool), cx0, cy0, \
                 _np.zeros((H, W), dtype=bool)
         union_ge = [None] * (maxL + 1)
@@ -3033,6 +3069,9 @@ class _Raster:
                 continue
             win = _swv(Vk.astype(_np.int32), (MH, MW))
             total += _np.einsum('rcij,ij->rc', win, mk.astype(_np.int32))
+        if want_near:
+            return ((total == 0), cx0, cy0, occ_fp,
+                    _np.logical_and(total > 0, total <= self.near_k))
         return (total == 0), cx0, cy0, occ_fp
 
 
@@ -4104,6 +4143,10 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
     # worse than the v14 winners; see results.csv). There (and ONLY there) W0
     # runs a productive dispatcher stream and repack deepening (`deep`) is on.
     reclaim = (forced and len(blocks_data) >= 250) or overload > 1.05
+    # v21: plan-eligible tardy class (same trigger as the v20 W1 explorer).
+    # On these instances W2/W3 lotteries gain nm+beam tickets of the measured-
+    # winning construction family; everywhere else they stay byte-exact.
+    nm_elig = forced and w1 >= 6000 and overload > 0.65
 
     # v13: raster engine (shared masks). Every non-anchor worker gets one: the
     # dispatcher workers (W2/W3) use its occupancy for construction, and ALL
@@ -4117,7 +4160,7 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                                           ) else None
 
     def improve(assign, seed, until=None, repack_every=0, win_scale=2.0,
-                xbay=None):
+                xbay=None, nearmiss=0):
         dl = deadline if until is None else min(until, deadline)
         # v15: xbay default follows `forced` (giant W3 repack specialist gets it;
         # non-forced fallback improves stay v14). polish passes it explicitly
@@ -4128,7 +4171,8 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
         r, o = _improve(prob_info, assign, bays, bay_u, w1, w2, w3,
                         dl, forced, seed=seed, on_best=push, inbox=inbox,
                         raster=raster, repack_every=repack_every,
-                        xbay=xb, repack_win_scale=win_scale, deep=reclaim)
+                        xbay=xb, repack_win_scale=win_scale, deep=reclaim,
+                        nearmiss=nearmiss)
         push(o, r, force=True)
         return o, r
 
@@ -4212,18 +4256,19 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
         return tg
 
     def dispatch(kappa, gamma, drng=None, alpha=0.0, score_pos=True,
-                 tspec=None, beam=False, dl=None):
+                 tspec=None, beam=False, dl=None, nearmiss=0):
         raster.reset()
         a = _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3,
                                 dl if dl is not None else deadline,
                                 raster, kappa=kappa, gamma=gamma, rng=drng,
                                 alpha=alpha, score_pos=score_pos,
-                                targets=fluid_tgt(tspec), beam=beam)
+                                targets=fluid_tgt(tspec), beam=beam,
+                                nearmiss=nearmiss)
         o = iobj(a)
         push(o, a)
         return o, a
 
-    def polish(assign, seed, repack_every=0, alts=None):
+    def polish(assign, seed, repack_every=0, alts=None, nearmiss=0):
         """v15 r2 polish. Three regimes:
 
         GIANTS (forced, n>=250) -> EXACT v14 envelope (improve -> CP-SAT ->
@@ -4268,7 +4313,7 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                     src = alts[ai]
                 o_, r_ = improve(src, cs, until=cyc_dl,
                                  repack_every=repack_every, win_scale=sc,
-                                 xbay=xb)
+                                 xbay=xb, nearmiss=nearmiss)
                 if o_ < ob:
                     base, ob = r_, o_
 
@@ -4276,7 +4321,7 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
             # -- EXACT v14 polish (see docstring) ------------------------------
             o1, r1 = improve(assign, seed, until=cp_at,
                              repack_every=repack_every, win_scale=2.0,
-                             xbay=False)
+                             xbay=False, nearmiss=nearmiss)
             base, ob = r1, o1
             try:
                 rc = _cpsat_retime(prob_info, r1, bays, blocks_data,
@@ -4291,7 +4336,7 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
             if time.time() < z3_at - 2.0:
                 o2, r2 = improve(base, seed + 1, until=z3_at,
                                  repack_every=repack_every, win_scale=2.0,
-                                 xbay=False)
+                                 xbay=False, nearmiss=nearmiss)
                 if o2 < ob:
                     base, ob = r2, o2
         elif forced:
@@ -4309,7 +4354,7 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
         else:
             o1, r1 = improve(assign, seed, until=cp_at,
                              repack_every=repack_every, win_scale=2.0,
-                             xbay=False)
+                             xbay=False, nearmiss=nearmiss)
             if o1 < ob:
                 base, ob = r1, o1
             try:
@@ -4411,7 +4456,16 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
         if reclaim and raster is not None:
             a0 = None
             try:
-                _o0, a0 = dispatch(2.0, 0.5, alpha=0.5)
+                if nm_elig:
+                    # v21: the reclaimed stream's build joins the nm+beam
+                    # family (27/38/39; reclaimed-but-ineligible 40 keeps the
+                    # v16 build byte-exact). Full-budget deep improve + whole-
+                    # bay phase then run on a measured-better construction.
+                    _o0, a0 = dispatch(2.0, 0.5, alpha=0.5, beam=True,
+                                       nearmiss=8,
+                                       dl=t_start + 0.30 * window)
+                else:
+                    _o0, a0 = dispatch(2.0, 0.5, alpha=0.5)
             except Exception:
                 a0 = None
             if a0 is not None:
@@ -4550,12 +4604,22 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                         (0.0, 1.0, (0.70, "cut"), False),
                         (1.0, 1.0, None, False), (0.5, 2.0, None, False),
                         (0.0, 1.0, None, True)]    # v14: beam ticket last
+            if nm_elig:
+                # v21: two nm+beam tickets FIRST (the measured-winning family;
+                # W1's grid: kappa 0.5-2.0, alpha 0.5-1.0 are the hot region).
+                # Different configs than W1's rotation head for diversity.
+                plan = [(0.5, 1.0, None, "nmbeam"),
+                        (1.0, 0.5, None, "nmbeam")] + plan
             for al, ka, ts_, bm in plan:
                 try:
                     # beam tickets are capped at the lottery boundary so a slow
                     # multi-order fill can never starve the repack-heavy polish.
-                    cands.append(dispatch(ka, 0.5, alpha=al, tspec=ts_, beam=bm,
-                                          dl=cap if bm else None))
+                    if bm == "nmbeam":
+                        cands.append(dispatch(ka, 0.5, alpha=al, beam=True,
+                                              dl=cap, nearmiss=8))
+                    else:
+                        cands.append(dispatch(ka, 0.5, alpha=al, tspec=ts_,
+                                              beam=bm, dl=cap if bm else None))
                 except Exception:
                     break
                 if time.time() >= cap:
@@ -4590,6 +4654,18 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
     # prob_38 -> a 4th worker projects ~4GB, far under the 16GB budget. All
     # accepts obj-gated; worst case it contributes nothing (parent takes min).
     if wid == 3 and raster is not None and forced and len(blocks_data) >= 250:
+        # v21 (nm_elig giants 38/39): seed with one nm+beam build -- one more
+        # full-scale draw of the measured-winning family; the improver then
+        # repacks the inbox leader exactly as before. Non-eligible giants keep
+        # the v14 sparse seed byte-exact.
+        if nm_elig:
+            try:
+                _o, a = dispatch(1.0, 0.5, alpha=1.0, beam=True, nearmiss=8,
+                                 dl=t_start + 0.3 * window)
+                improve(a, seed=4444, repack_every=2, xbay=True, nearmiss=8)
+                return
+            except Exception:
+                pass  # fall through to the v14 path
         try:
             a = _construct(prob_info, _edd_order(blocks_data), bays, bay_u,
                            w1, w2, w3, t_start, t_start, forced=True)
@@ -4643,13 +4719,25 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
             plan = [(1.0, 0.5, 0.0, (0.80, "cut"), False),
                     (2.0, 0.5, 0.0, (1.10, "spt"), False),
                     (1.0, 0.5, 0.0, None, True)] + plan
+        if nm_elig:
+            # v21: nm+beam tickets APPENDED (not prepended: prepending shifted
+            # the rotation + drng stream and displaced prob_26's banked W3
+            # beam-draw winner by +374k -- measured on the first v21 spot).
+            # Appended tickets run only in leftover slot time and leave the
+            # original draw sequence byte-exact.
+            plan = plan + [(2.0, 0.5, 0.5, None, "nmbeam"),
+                           (0.5, 0.5, 1.0, None, "nmbeam")]
         gi = 0
         while True:
             kap, gam, al, ts_, bm = plan[gi % len(plan)]
             gi += 1
             try:
-                cands.append(dispatch(kap, gam, drng, alpha=al, tspec=ts_,
-                                      beam=bm, dl=cap if bm else None))
+                if bm == "nmbeam":
+                    cands.append(dispatch(kap, gam, drng, alpha=al, beam=True,
+                                          dl=cap, nearmiss=8))
+                else:
+                    cands.append(dispatch(kap, gam, drng, alpha=al, tspec=ts_,
+                                          beam=bm, dl=cap if bm else None))
             except Exception:
                 break
             if time.time() >= cap or gi > 60:
@@ -4681,15 +4769,14 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
             and overload > 0.65):
         cands = []
         try:
-            pb = min(60.0, 0.12 * window)
             tick_dl = t_start + 0.55 * window
 
-            def ticket(tg, bm, nm, kap, al):
+            def ticket(tg, bm, nm, kap, al, drng=None):
                 raster.reset()
                 a_ = _dispatch_construct(
                     prob_info, bays, bay_u, w1, w2, w3,
                     min(tick_dl, deadline), raster, kappa=kap, gamma=0.5,
-                    alpha=al, score_pos=True, targets=tg, beam=bm,
+                    alpha=al, score_pos=True, rng=drng, targets=tg, beam=bm,
                     nearmiss=nm)
                 o_ = iobj(a_)
                 push(o_, a_)
@@ -4697,25 +4784,28 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
 
             # nm+beam config lottery (measured grid, heuristic_20 Results:
             # per-instance winners vary -- 31 wants kappa 0.5, 33 wants 2.0 --
-            # so rotate a diverse list, min-wins keeps the best).
-            for kap, al in ((0.5, 0.5), (2.0, 0.5), (1.0, 0.0), (0.5, 1.0),
-                            (4.0, 0.0), (1.0, 0.5), (0.5, 0.0), (2.0, 1.0)):
+            # so rotate a diverse list, min-wins keeps the best). v21: the
+            # calibrated-plan ticket is DROPPED (gating measured dead in ALL
+            # forms -- fluid, calibrated, self-calibrating; heuristic_21 dead
+            # list); its time goes to jittered draws around the rotation
+            # (measured spread ~0.4M on 31, sometimes below deterministic).
+            base_cfgs = ((0.5, 0.5), (2.0, 0.5), (1.0, 0.0), (0.5, 1.0),
+                         (4.0, 0.0), (1.0, 0.5), (0.5, 0.0), (2.0, 1.0))
+            for kap, al in base_cfgs:
                 if time.time() >= t_start + 0.45 * window:
                     break
                 ticket(None, True, 8, kap, al)
-            # one calibrated-plan ticket (cheap diversification; the gate is
-            # the only mechanism that can hold sacrificed blocks on the
-            # structurally-oversubscribed pair 38/27).
-            if time.time() < tick_dl:
-                tg = _plan_targets(prob_info, bays, 0.60,
-                                   min(pb, max(5.0, tick_dl - time.time())))
-                if tg is not None and time.time() < tick_dl:
-                    ticket(tg, True, 8, 0.5, 0.5)
+            _jrng = random.Random(2121)
+            ji = 0
+            while time.time() < tick_dl and ji < 24:
+                kap, al = base_cfgs[ji % len(base_cfgs)]
+                ji += 1
+                ticket(None, True, 8, kap, al, drng=_jrng)
         except Exception:
             pass
         if cands:
             polish(min(cands, key=lambda c: c[0])[1], seed=2077,
-                   repack_every=3, alts=pick_alts(cands))
+                   repack_every=3, alts=pick_alts(cands), nearmiss=8)
             return
         # else: fall through to the legacy W1 path below
 

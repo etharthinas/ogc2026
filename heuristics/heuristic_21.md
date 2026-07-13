@@ -76,4 +76,29 @@ but one change at a time).
 
 ## Results
 
-(pending)
+### 21a spot @600s (2026-07-13)
+
+Improvement A (improver-nm): implemented sound, measured FLAT (+0 on 31/33
+at 150s from nm builds) — the repack neighborhood is exhausted on these
+constructions regardless of candidate recovery. Kept wired (byte-inert
+default), value ≈ 0. The 21a payload became slot economics + nm+beam family
+across W0/W2/W3 on eligible instances:
+
+| prob | v21 @600s | v20 | delta |
+|---|---|---|---|
+| 38 | 41,646,457 | 43,156,139 | **−1,509,682** |
+| 23 | 2,955,426 | 3,010,868 | **−55,442** |
+| 26 | 9,653,490 | 9,653,490 | ±0 (restored after append fix) |
+| 31/39/33/27/30 | (flat) | — | ±0 |
+
+Lesson re-learned the hard way: PREPENDING tickets to the W3 lottery
+displaced prob_26's banked beam-draw winner by +374k (v17's exact lesson,
+v14's exact magnitude). Fix: APPEND (W3) — original draw sequence byte-exact,
+nm tickets run in leftover time only; W2's prepend kept (source of 23/38
+gains, no banked winner lives there). prob_1 @60s protect: byte-exact.
+
+**Full-40 row `algorithm 21` = 137,636,209** (−1,565,124 vs v20;
+−12.0M vs v18). Remaining to <125M: −12.64M.
+
+38's residual: obj1=2965 (39.5M of its 41.6M) vs relax@0.7 target 1219.
+27 flat at 1899 obj1. 21b/21c (overhang scoring, MPC) target exactly these.
