@@ -232,8 +232,15 @@ End-to-end @600s vs SAME-MACHINE v20 controls: 31 = 9,232,297 (−356,463);
 39 = 9,726,907 (−75,629; −526,165 below the banked bench row); 27 =
 27,225,747 (banked value byte-reproduced — ticket-preservation design
 works); 26 = 9,489,882 (−163,608 vs banked). Protect: prob_1 @60s = 18,357
-byte-exact. Remaining eligible spots (33/23/30/38) pending; 33's raw −563k
-suggests more. NOTE 39's 600s value equals its raw compete build — polish
+byte-exact. Remaining eligible spots @600s (Mac): **38 = 40,833,186
+(−2,322,953 vs banked — the largest single-instance gain of the campaign
+since v13, on the hardest rock)**; 23 = 3,010,868 and 30 = 3,916,412 (banked
+values byte-reproduced — this class reproduces across machines, which
+supports attributing 38's gain to nm_compete); 33 = 8,542,047 (+165,233 vs
+banked, = its raw compete build exactly; likely machine pacing — needs a
+bench-machine run). Full eligible-set sum vs banked rows: ≈ −2.65M on this
+machine ⇒ projected full-40 ≈ 136.5M pending bench-machine validation.
+NOTE 39's and 33's 600s values equal their raw compete builds — polish
 added zero on top, consistent with the 20b-1 finding; the polish-flatness
 lever is still open (20b-4 MPC or throughput).
 
