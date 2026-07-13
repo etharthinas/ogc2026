@@ -133,6 +133,26 @@ verify unchanged.
   banked 4.08M must be reproduced by W0/W2/W3 or beaten).
 - Kill: all four rocks < −100k ⇒ record dead, revert W1.
 
+## 5. v20b queue (next sub-version, pending v20a spot results)
+
+1. **Near-miss in the improver** (the measured polish-flatness fix): improve
+   gained +0 twice on nm builds because destroy-rebuild reinserts via
+   conservative-mask `scan_scoped` and cannot re-create the nm placements it
+   destroys. Thread `nearmiss` through _improve's reinsert paths
+   (`_find_earliest_slot_raster` + the repack rebuild's scoped scans):
+   scan_scoped computes the same count grid — expose near cells, exact-gate
+   with _can_place, param default 0 (byte-inert), enabled only from the W1
+   explorer's polish calls.
+2. **Near cells in the main scoring competition** (not just as fallback):
+   near-miss anchors are contact-rich (deeper nesting); letting them compete
+   with mask-feasible cells on placement score may pack tighter even when a
+   mask-feasible cell exists. Costs more _can_place gates; measure.
+3. **W2/W3 lottery nm+beam tickets on eligible instances** (pacing-quarantine
+   per instance; only after v20a protect results are clean).
+4. **MPC joint admission** (v19 Improvement 3) stays in the queue — the plan
+   relaxation says ~10x more tardiness headroom remains even after nm+beam
+   (31: realized ~465 units vs plan floor ~39).
+
 ## Results (filled after testing)
 
 ### Offline ablation (single dispatch, kappa=2.0/alpha=0.5/score_pos, raw
