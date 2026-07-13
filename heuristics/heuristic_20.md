@@ -165,6 +165,29 @@ construction, NO polish; banked = v18 full-600s pipeline values)
 | 27 | 33,741,538 (t2384) | 30,591,108 (t2132) | **28,504,038 (t1990)** | 29,185,135 |
 | 38 | 48,164,392 (t3482) | 44,758,516 (t3220) | **44,014,363 (t3163)** | 45,806,839 |
 
+### v20a SPOT BENCH @600s (2026-07-13, loaded-machine caveat: ~1.5GB free
+RAM during run — biases AGAINST v20; 26 still byte-reproduced) — 8/8 feasible
+
+| prob | v20 @600s | banked (row 19) | delta |
+|---|---|---|---|
+| 31 | 9,038,459 | 10,981,881 | **−1,943,422** |
+| 39 | 10,253,072 | 12,361,461 | **−2,108,389** |
+| 33 | 8,376,814 | 9,566,490 | **−1,189,676** |
+| 27 | 27,225,747 | 29,185,135 | **−1,959,388** |
+| 26 | 9,653,490 | 9,653,490 | ±0 (byte-reproduced) |
+| 23 | 3,010,868 | 3,390,436 | **−379,568** |
+| 30 | 3,916,412 | 4,083,746 | **−167,334** |
+| 38 | 43,156,139 | 45,806,839 | **−2,650,700** |
+
+Total delta **−10,398,477** → full-40 = **139,201,333** (row `algorithm 20`;
+non-eligible 32 instances banked — their code paths are byte-exact v18,
+verified: prob_1 @60s = 18,357 byte-exact, dispatch hash-identical, near-grid
+computation opt-in per raster so legacy workers pay zero overhead).
+Spot gates (31 < 10.4M, 39 < 11.8M): PASSED. Kill criterion: not tripped.
+myalgorithm.py promoted to v20.
+
+Remaining to <125M: −14.2M. Next: 20b queue (§5).
+
 Offline polish of the 31 nm+beam build (improve 150s -> retime -> improve
 90s): 10,899,293 -> **10,792,311 official-feasible** (banked −189,570). The
 improver itself gained +0 both times — its repack destroy-rebuild uses

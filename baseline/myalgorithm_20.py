@@ -2796,6 +2796,8 @@ class _Raster:
         # cells. Every consumer exact-gates them with _can_place before use,
         # so the recovery is sound. Cached alongside the scan cache.
         self.near_k = 3
+        self.near_enabled = False   # explorer slots flip this; default = zero
+        #                             overhead on every legacy worker/path
         self._nearc = [dict() for _ in bays]  # bay -> {(bi,oi): (ver, near)}
 
     # -- mask construction -----------------------------------------------------
@@ -2936,7 +2938,8 @@ class _Raster:
         H, W = self.H[bay], self.W[bay]
         if MH > H or MW > W:
             self._scan[bay][(bi, oi)] = (self.ver[bay], None, cx0, cy0)
-            self._nearc[bay][(bi, oi)] = (self.ver[bay], None)
+            if self.near_enabled:
+                self._nearc[bay][(bi, oi)] = (self.ver[bay], None)
             return None, cx0, cy0
         R = H - MH + 1; C = W - MW + 1
         unions = self._unions(bay)
@@ -2955,9 +2958,10 @@ class _Raster:
             total += _np.einsum('rcij,ij->rc', win, mk.astype(_np.int32))
         feas = (total == 0)
         self._scan[bay][(bi, oi)] = (self.ver[bay], feas, cx0, cy0)
-        # v20: near-miss anchors from the same count grid (free byproduct).
-        self._nearc[bay][(bi, oi)] = (
-            self.ver[bay], _np.logical_and(total > 0, total <= self.near_k))
+        if self.near_enabled:
+            # v20: near-miss anchors from the same count grid (byproduct).
+            self._nearc[bay][(bi, oi)] = (
+                self.ver[bay], _np.logical_and(total > 0, total <= self.near_k))
         return feas, cx0, cy0
 
     def scan_near(self, bay, bi, oi):
@@ -2965,8 +2969,12 @@ class _Raster:
         occupancy version (computes it via scan() if stale). Same (R,C)/cx0/
         cy0 mapping as scan(); every anchor MUST be exact-gated by _can_place
         before use (the mask says these overlap by <= near_k dilated cells)."""
+        self.near_enabled = True
         nc = self._nearc[bay].get((bi, oi))
         if nc is None or nc[0] != self.ver[bay]:
+            # a cached scan at this ver may predate near_enabled -- drop it so
+            # scan() recomputes the count grid and stores the near anchors.
+            self._scan[bay].pop((bi, oi), None)
             self.scan(bay, bi, oi)
             nc = self._nearc[bay].get((bi, oi))
             if nc is None:

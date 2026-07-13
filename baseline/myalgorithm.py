@@ -1,3 +1,21 @@
+# myalgorithm_20.py  --  v20 = v18 + plan-explorer W1 slot on the tardy class.
+# See heuristic_20.md. ledger_19's "density-saturated" verdict is REFUTED
+# (footprint metric double-counted stacking; true per-layer burst density is
+# 0.47-0.7 with 20+ blocks queued outside half-empty bays). v20 adds, all
+# quarantined behind the W1 slot on {forced, w1>=6000, overload>0.65}:
+#  A. NEAR-MISS ADMISSION RECOVERY: _Raster.scan keeps its overlap-count grid;
+#     anchors rejected by <= near_k dilated cells are exact-gated by
+#     _can_place at the admission frontier (recovers the ~0.10-0.15 density
+#     band lost to conservative mask dilation). nearmiss=0 default = inert.
+#  B. CALIBRATED PLAN TARGETS (_plan_targets): non-preemptive per-layer
+#     cumulative CP-SAT plan (left-shifted), feeding the existing round-3
+#     admission-gate machinery. Not the dead fluid gate: exact durations,
+#     per-layer capacity, left-shift.
+#  C. W1 EXPLORER SLOT: ungated near-miss control + three plan tickets ->
+#     giant polish envelope; legacy W1 path on any failure. W0/W2/W3
+#     byte-exact v18 everywhere; non-eligible instances fully byte-exact.
+# ---------------------------------------------------------------------------
+# (v18 header below, kept verbatim for provenance)
 # myalgorithm_18.py  --  v18 = v17 + exact-pack WINDOW shots aimed at the
 #                        GLOBAL BEST (whole-bay model measured-dead and
 #                        retired to provenance). See heuristic_18.md.
@@ -1024,7 +1042,7 @@ def _rebuild_sched(assignments, blocks_data, n_bays):
 
 
 def _repair_order(removed, blocks_data, mode, rng):
-    """Diversified reinsertion orderings — different orderings unlock different
+    """Diversified reinsertion orderings -- different orderings unlock different
     packings, which is what lets the improver escape EDD-only local optima."""
     rem = list(removed)
     if mode == 0:      # EDD
@@ -2575,7 +2593,7 @@ def _v9_search(prob_info, timelimit, t_start, push=None):
         # best), then let the improver use the remaining ~30% (which still helps
         # the genuinely round-starved giants like prob_38/39). Each construction
         # is dense (passed the full deadline) and finishes in its natural time, so
-        # big instances fit ~1 (≈ old behavior) while small ones fit 2-3.
+        # big instances fit ~1 (~ old behavior) while small ones fit 2-3.
         rng_c = random.Random(2026)
         t_first = search_window  # conservative default if the first build fails
         try:
@@ -2773,6 +2791,14 @@ class _Raster:
         # v13 throughput caches (transparent -- same numeric results as v12):
         self._scan = [dict() for _ in bays]   # bay -> {(bi,oi): (ver, feas,cx0,cy0)}
         self._fp = [None for _ in bays]       # bay -> (ver, footprint bool grid)
+        # v20 Improvement A: near-miss cells (0 < overlap count <= near_k) --
+        # anchors the conservative mask rejects by at most near_k dilated
+        # cells. Every consumer exact-gates them with _can_place before use,
+        # so the recovery is sound. Cached alongside the scan cache.
+        self.near_k = 3
+        self.near_enabled = False   # explorer slots flip this; default = zero
+        #                             overhead on every legacy worker/path
+        self._nearc = [dict() for _ in bays]  # bay -> {(bi,oi): (ver, near)}
 
     # -- mask construction -----------------------------------------------------
     def mask(self, bi, oi):
@@ -2856,6 +2882,7 @@ class _Raster:
             self._uni[j] = None
             self._scan[j] = dict()
             self._fp[j] = None
+            self._nearc[j] = dict()
 
     def add(self, bay, bi, oi, x, y):
         self._apply(bay, bi, oi, x, y, 1)
@@ -2911,6 +2938,8 @@ class _Raster:
         H, W = self.H[bay], self.W[bay]
         if MH > H or MW > W:
             self._scan[bay][(bi, oi)] = (self.ver[bay], None, cx0, cy0)
+            if self.near_enabled:
+                self._nearc[bay][(bi, oi)] = (self.ver[bay], None)
             return None, cx0, cy0
         R = H - MH + 1; C = W - MW + 1
         unions = self._unions(bay)
@@ -2929,7 +2958,28 @@ class _Raster:
             total += _np.einsum('rcij,ij->rc', win, mk.astype(_np.int32))
         feas = (total == 0)
         self._scan[bay][(bi, oi)] = (self.ver[bay], feas, cx0, cy0)
+        if self.near_enabled:
+            # v20: near-miss anchors from the same count grid (byproduct).
+            self._nearc[bay][(bi, oi)] = (
+                self.ver[bay], _np.logical_and(total > 0, total <= self.near_k))
         return feas, cx0, cy0
+
+    def scan_near(self, bay, bi, oi):
+        """v20: near-miss anchor grid matching the last scan() at the current
+        occupancy version (computes it via scan() if stale). Same (R,C)/cx0/
+        cy0 mapping as scan(); every anchor MUST be exact-gated by _can_place
+        before use (the mask says these overlap by <= near_k dilated cells)."""
+        self.near_enabled = True
+        nc = self._nearc[bay].get((bi, oi))
+        if nc is None or nc[0] != self.ver[bay]:
+            # a cached scan at this ver may predate near_enabled -- drop it so
+            # scan() recomputes the count grid and stores the near anchors.
+            self._scan[bay].pop((bi, oi), None)
+            self.scan(bay, bi, oi)
+            nc = self._nearc[bay].get((bi, oi))
+            if nc is None:
+                return None
+        return nc[1]
 
     def scan_scoped(self, bay, actives, bi, oi):
         """v13 raster-windowed repair primitive. Feasible-anchor grid for
@@ -3052,6 +3102,79 @@ def _overload_ratio(prob_info, bays):
     rmin = min(b["release_time"] for b in bl)
     dmax = max(b["due_date"] for b in bl)
     return vol / max(1e-9, cap * max(1, dmax - rmin))
+
+
+def _plan_targets(prob_info, bays, cap_frac, budget_s, seed=20):
+    """v20 Improvement B: calibrated non-preemptive admission plan.
+
+    CP-SAT cumulative relaxation -- merged-bay capacity C*cap_frac PER LAYER
+    (the true co-residency constraint; ledger_19's footprint metric
+    double-counted stacking), exact integer durations, entry >= release.
+    Objective 1000*sum(tardiness) + sum(start - release): tardiness dominates,
+    the left-shift term keeps non-sacrificed blocks' targets at release so the
+    admission gate never idles space gratuitously. Returns {bi: entry} or
+    None (no ortools / infeasible / no solution in budget). Differences from
+    the dead fluid gate (family #3): non-preemptive, per-layer calibrated
+    capacity, left-shifted targets."""
+    try:
+        from ortools.sat.python import cp_model
+    except Exception:
+        return None
+    try:
+        bd = prob_info["blocks"]
+        n = len(bd)
+        C = sum(b.width * b.height for b in bays)
+        cap = int(math.floor(C * cap_frac))
+        rel = [int(b["release_time"]) for b in bd]
+        due = [int(b["due_date"]) for b in bd]
+        p = [int(b["processing_time"]) for b in bd]
+        maxL = max(len(b["shape"][0]["layers"]) for b in bd)
+        dem = []
+        for b in bd:
+            per = []
+            for L in range(maxL):
+                areas = [_poly_area(o["layers"][L])
+                         if len(o["layers"]) > L else 0.0
+                         for o in b["shape"]]
+                per.append(int(math.floor(min(areas))))
+            dem.append(per)
+        H = max(due) + sum(sorted(p)[-10:])
+        m = cp_model.CpModel()
+        starts, ivs, tards = [], [], []
+        for i in range(n):
+            s = m.NewIntVar(rel[i], H - p[i], "s%d" % i)
+            iv = m.NewIntervalVar(s, p[i], s + p[i], "iv%d" % i)
+            t = m.NewIntVar(0, H, "t%d" % i)
+            m.AddMaxEquality(t, [s + p[i] - due[i], 0])
+            starts.append(s); ivs.append(iv); tards.append(t)
+        for L in range(maxL):
+            li = [i for i in range(n) if dem[i][L] > 0]
+            if li:
+                m.AddCumulative([ivs[i] for i in li],
+                                [dem[i][L] for i in li], cap)
+        m.Minimize(1000 * sum(tards) +
+                   sum(starts[i] - rel[i] for i in range(n)))
+        sol = cp_model.CpSolver()
+        sol.parameters.max_time_in_seconds = float(budget_s)
+        sol.parameters.num_search_workers = 1
+        sol.parameters.random_seed = seed
+        st = sol.Solve(m)
+        if st not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            return None
+        return {i: int(sol.Value(starts[i])) for i in range(n)}
+    except Exception:
+        return None
+
+
+def _poly_area(pts):
+    """Shoelace area of a vertex list (v20; plan-target demand profiles)."""
+    s = 0.0
+    n = len(pts)
+    for i in range(n):
+        x1, y1 = pts[i]
+        x2, y2 = pts[(i + 1) % n]
+        s += x1 * y2 - x2 * y1
+    return abs(s) / 2.0
 
 
 def _fluid_targets(prob_info, bays, c_eff, mode):
@@ -3192,7 +3315,7 @@ def _fluid_targets(prob_info, bays, c_eff, mode):
 def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
                         kappa=1.0, gamma=0.5, rng=None, cand_cap=12,
                         alpha=0.0, score_pos=False, eps=0.15, targets=None,
-                        beam=False, beam_m=4):
+                        beam=False, beam_m=4, nearmiss=0):
     """Event-driven admission construction using the raster full-position scan.
 
     Walk event times (releases + scheduled exits); at each event admit queued
@@ -3280,6 +3403,33 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
                     tried += 1
                     if tried >= cap:
                         break
+        # v20 Improvement A: near-miss recovery. The conservative mask found
+        # no clear anchor; try anchors it rejects by <= near_k dilated cells,
+        # exact-gated by _can_place (a pass is officially feasible). Only in
+        # explorer slots (nearmiss=0 default keeps this path byte-inert).
+        if nearmiss > 0:
+            for bay_id in order:
+                bay = bays[bay_id]
+                rel = _rel_sched_bbox(sched[bay_id], t, exit_t)
+                occ_fp = raster.footprint(bay_id) if score_pos else None
+                for oi in orients_of[bi]:
+                    if not _orient_fits(blk, oi, bay):
+                        continue
+                    near = raster.scan_near(bay_id, bi, oi)
+                    if near is None or not near.any():
+                        continue
+                    _f, cx0, cy0 = raster.scan(bay_id, bi, oi)
+                    cells = _order_cells(raster, near, cx0, cy0, bi, oi,
+                                         raster.W[bay_id], occ_fp, score_pos,
+                                         rng)
+                    tried = 0
+                    for (x, y) in cells:
+                        nb = _mkblock(bi, blk, x, y, oi)
+                        if _can_place(bay, rel, nb, t, exit_t):
+                            return (bay_id, x, y, oi, t, exit_t)
+                        tried += 1
+                        if tried >= nearmiss:
+                            break
         return None
 
     def cap_for(qlen):
@@ -4518,6 +4668,56 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
             except Exception:
                 pass
         return
+
+    # -- v20 W1 PLAN-EXPLORER SLOT (heuristic_20) ------------------------------
+    # On the plan-eligible tardy class (forced, w1 >= 6000, overload > 0.65 --
+    # train: {23,26,27,30,31,33,38,39}) W1 trades the AREA-basin build for the
+    # calibrated-plan pipeline: non-preemptive per-layer cumulative plan
+    # (_plan_targets) -> gated dispatch tickets with near-miss recovery ->
+    # giant polish envelope. W0/W2/W3 and all other instances keep their v18
+    # paths byte-exact; min-wins + official verify protect the bank. Any
+    # failure falls through to the legacy W1 path.
+    if (wid == 1 and raster is not None and forced and w1 >= 6000
+            and overload > 0.65):
+        cands = []
+        try:
+            pb = min(60.0, 0.12 * window)
+            tick_dl = t_start + 0.55 * window
+
+            def ticket(tg, bm, nm, kap, al):
+                raster.reset()
+                a_ = _dispatch_construct(
+                    prob_info, bays, bay_u, w1, w2, w3,
+                    min(tick_dl, deadline), raster, kappa=kap, gamma=0.5,
+                    alpha=al, score_pos=True, targets=tg, beam=bm,
+                    nearmiss=nm)
+                o_ = iobj(a_)
+                push(o_, a_)
+                cands.append((o_, a_))
+
+            # nm+beam config lottery (measured grid, heuristic_20 Results:
+            # per-instance winners vary -- 31 wants kappa 0.5, 33 wants 2.0 --
+            # so rotate a diverse list, min-wins keeps the best).
+            for kap, al in ((0.5, 0.5), (2.0, 0.5), (1.0, 0.0), (0.5, 1.0),
+                            (4.0, 0.0), (1.0, 0.5), (0.5, 0.0), (2.0, 1.0)):
+                if time.time() >= t_start + 0.45 * window:
+                    break
+                ticket(None, True, 8, kap, al)
+            # one calibrated-plan ticket (cheap diversification; the gate is
+            # the only mechanism that can hold sacrificed blocks on the
+            # structurally-oversubscribed pair 38/27).
+            if time.time() < tick_dl:
+                tg = _plan_targets(prob_info, bays, 0.60,
+                                   min(pb, max(5.0, tick_dl - time.time())))
+                if tg is not None and time.time() < tick_dl:
+                    ticket(tg, True, 8, 0.5, 0.5)
+        except Exception:
+            pass
+        if cands:
+            polish(min(cands, key=lambda c: c[0])[1], seed=2077,
+                   repack_every=3, alts=pick_alts(cands))
+            return
+        # else: fall through to the legacy W1 path below
 
     if forced:
         if wid == 1:
