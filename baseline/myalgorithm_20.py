@@ -1042,7 +1042,7 @@ def _rebuild_sched(assignments, blocks_data, n_bays):
 
 
 def _repair_order(removed, blocks_data, mode, rng):
-    """Diversified reinsertion orderings — different orderings unlock different
+    """Diversified reinsertion orderings -- different orderings unlock different
     packings, which is what lets the improver escape EDD-only local optima."""
     rem = list(removed)
     if mode == 0:      # EDD
@@ -2593,7 +2593,7 @@ def _v9_search(prob_info, timelimit, t_start, push=None):
         # best), then let the improver use the remaining ~30% (which still helps
         # the genuinely round-starved giants like prob_38/39). Each construction
         # is dense (passed the full deadline) and finishes in its natural time, so
-        # big instances fit ~1 (≈ old behavior) while small ones fit 2-3.
+        # big instances fit ~1 (~ old behavior) while small ones fit 2-3.
         rng_c = random.Random(2026)
         t_first = search_window  # conservative default if the first build fails
         try:
@@ -4687,15 +4687,22 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                 push(o_, a_)
                 cands.append((o_, a_))
 
-            ticket(None, True, 8, 2.0, 0.5)     # ungated near-miss control
-            for cf, bm, bud in ((0.60, True, pb), (0.55, True, pb * 0.6),
-                                (0.65, False, pb * 0.6)):
-                if time.time() >= tick_dl:
+            # nm+beam config lottery (measured grid, heuristic_20 Results:
+            # per-instance winners vary -- 31 wants kappa 0.5, 33 wants 2.0 --
+            # so rotate a diverse list, min-wins keeps the best).
+            for kap, al in ((0.5, 0.5), (2.0, 0.5), (1.0, 0.0), (0.5, 1.0),
+                            (4.0, 0.0), (1.0, 0.5), (0.5, 0.0), (2.0, 1.0)):
+                if time.time() >= t_start + 0.45 * window:
                     break
-                tg = _plan_targets(prob_info, bays, cf,
-                                   min(bud, max(5.0, tick_dl - time.time())))
+                ticket(None, True, 8, kap, al)
+            # one calibrated-plan ticket (cheap diversification; the gate is
+            # the only mechanism that can hold sacrificed blocks on the
+            # structurally-oversubscribed pair 38/27).
+            if time.time() < tick_dl:
+                tg = _plan_targets(prob_info, bays, 0.60,
+                                   min(pb, max(5.0, tick_dl - time.time())))
                 if tg is not None and time.time() < tick_dl:
-                    ticket(tg, bm, 8, 2.0, 0.0)
+                    ticket(tg, True, 8, 0.5, 0.5)
         except Exception:
             pass
         if cands:

@@ -135,4 +135,35 @@ verify unchanged.
 
 ## Results (filled after testing)
 
-(pending)
+### Offline ablation (single dispatch, kappa=2.0/alpha=0.5/score_pos, raw
+construction, NO polish; banked = v18 full-600s pipeline values)
+
+| prob | nm=0 | nm=8 | nm=8 + beam | banked (600s) |
+|---|---|---|---|---|
+| 31 | 13,994,937 (t849) | 12,855,886 (t766) | **10,899,293 (t602)** | 10,981,881 |
+| 39 | 14,579,376 (t1044) | 13,572,848 (t952) | **10,386,149 (t703)** | 12,361,461 |
+| 27 | 33,741,538 (t2384) | 30,591,108 (t2132) | **28,504,038 (t1990)** | 29,185,135 |
+| 38 | 48,164,392 (t3482) | 44,758,516 (t3220) | **44,014,363 (t3163)** | 45,806,839 |
+
+Offline polish of the 31 nm+beam build (improve 150s -> retime -> improve
+90s): 10,899,293 -> **10,792,311 official-feasible** (banked −189,570). The
+improver itself gained +0 both times — its repack destroy-rebuild uses
+conservative-mask scan_scoped and cannot re-create near-miss placements, so
+polish on nm builds is retime-only. Threading nearmiss into the improver
+reinsert path is the 20b compounding lever.
+
+kappa x alpha grid (nm=8, beam, raw): per-instance winners VARY —
+31: (0.5, 0.5) = **9,158,172 (t465)**; 39: (0.5, 1.0) = **9,944,600
+(t674)**; 33: (2.0, 0.5) = **8,821,905** (banked 9,566,490). The (2.0, 0.5)
+first-probe default left 1.7M on the table on 31. Slot design updated to a
+diverse 8-config rotation + one plan ticket, min-wins. prob_26-class
+(density-limited, non-rock) raw builds land ABOVE banked — the explorer
+there rides on polish/min-wins only, as expected.
+
+Raw nm+beam constructions BEAT the fully-polished banked values on 39
+(−2.0M) and 27 (−0.7M) and match 31 (−83k). Near-miss recovery alone is
+worth ~1–3M raw on every rock; beam× near-miss compounds (the beam's joint
+fill now sees the recovered anchors). Plan-target tickets on 31 landed
+within noise of ungated (11.0M vs 10.9M) — the gate is NOT the primary
+lever; dilation recovery is. Byte-inertness verified: nm=0 dispatch hash-
+identical to v18 on prob_31.
