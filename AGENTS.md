@@ -1,0 +1,1 @@
+Always run under conda env ogc2026, as stated in README.txt.
