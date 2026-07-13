@@ -1,3 +1,11 @@
+# myalgorithm_22.py  --  v22 = v21 + MPC JOINT ADMISSION (heuristic_21
+# Improvement C): at deep-queue beam events, a CP-SAT max-weight
+# compatible-set fill (footprint-union-disjoint candidate cells, exact
+# _can_place gate at commit) competes with the three greedy fill orders
+# under the same (admitted area, cost) key. Explorer mpc tickets only;
+# mpc=False default keeps every other path byte-exact.
+# ---------------------------------------------------------------------------
+# (v21 header below, kept verbatim for provenance)
 # myalgorithm_21.py  --  v21 = v20 + near-miss threading through the improver
 # reinsert path (_find_earliest_slot_raster / _repack_window / _improve,
 # default 0 = byte-inert; enabled from the W1 explorer's polish) + W1 slot
@@ -3354,7 +3362,7 @@ def _fluid_targets(prob_info, bays, c_eff, mode):
 def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
                         kappa=1.0, gamma=0.5, rng=None, cand_cap=12,
                         alpha=0.0, score_pos=False, eps=0.15, targets=None,
-                        beam=False, beam_m=4, nearmiss=0):
+                        beam=False, beam_m=4, nearmiss=0, mpc=False):
     """Event-driven admission construction using the raster full-position scan.
 
     Walk event times (releases + scheduled exits); at each event admit queued
@@ -3527,6 +3535,123 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
             return tot
         order_con = sorted(ordered, key=cellcount)
 
+        def rollback(committed):
+            for bi, place in reversed(committed):   # exact int occ
+                bay_id, x, y, oi, en, ex = place
+                raster.remove(bay_id, bi, oi, x, y)
+                s = sched[bay_id]
+                for idx in range(len(s) - 1, -1, -1):
+                    if s[idx][0].block_id == bi:
+                        del s[idx]
+                        break
+                bay_loads[bay_id] -= blocks_data[bi]["workload"]
+                del assignments[bi]
+
+        def evaluate(committed):
+            area = sum(areas[bi] for bi, _ in committed)
+            cost = 0.0
+            for bi, place in committed:
+                prefs = blocks_data[bi]["bay_preferences"]
+                cost += (w1 * max(0, place[5] - dues[bi])
+                         + w3 * (max(prefs) - prefs[place[0]]))
+            return (-area, cost)
+
+        def mpc_fill(admissible):
+            """v22 MPC JOINT ADMISSION: CP-SAT max-weight compatible-set over
+            candidate cells of the queued head, instead of a greedy order.
+            Compatibility = footprint-union masks disjoint (conservative:
+            disjoint unions imply collision-free co-residency AND same-tick /
+            any-order crane entries and exits). Every selected placement is
+            still exact-gated by _can_place at commit; failures are skipped.
+            Returns a committed list (caller evaluates + rolls back)."""
+            try:
+                from ortools.sat.python import cp_model
+            except Exception:
+                return []
+            D, K = 16, 6
+            cand = []      # (bi, bay_id, oi, x, y, r0, c0, fp)
+            for bi in admissible[:D]:
+                blk = blocks_data[bi]
+                per = []
+                for bay_id in range(n_bays):
+                    bay = bays[bay_id]
+                    occ_fp = (raster.footprint(bay_id) if score_pos else None)
+                    for oi in orients_of[bi]:
+                        if len(per) >= K:
+                            break
+                        if not _orient_fits(blk, oi, bay):
+                            continue
+                        feas, cx0, cy0 = raster.scan(bay_id, bi, oi)
+                        grids = []
+                        if feas is not None and feas.any():
+                            grids.append(feas)
+                        if nearmiss > 0:
+                            nr = raster.scan_near(bay_id, bi, oi)
+                            if nr is not None and nr.any():
+                                grids.append(nr)
+                        for g in grids:
+                            cells = _order_cells(raster, g, cx0, cy0, bi, oi,
+                                                 raster.W[bay_id], occ_fp,
+                                                 score_pos, None)
+                            for (x, y) in cells[:3]:
+                                fp = raster.mask_fp(bi, oi)
+                                per.append((bi, bay_id, oi, x, y,
+                                            int(y) + cy0, int(x) + cx0, fp))
+                                if len(per) >= K:
+                                    break
+                            if len(per) >= K:
+                                break
+                cand.extend(per)
+            if len(cand) < 8:
+                return []
+            m = cp_model.CpModel()
+            xs = [m.NewBoolVar("c%d" % i) for i in range(len(cand))]
+            by_block = {}
+            for i, c in enumerate(cand):
+                by_block.setdefault(c[0], []).append(xs[i])
+            for vs in by_block.values():
+                m.AddAtMostOne(vs)
+            # pairwise conflicts: same bay + footprint-union masks intersect
+            for i in range(len(cand)):
+                bi_i, bay_i, _oi, _x, _y, r0i, c0i, fpi = cand[i]
+                hi, wi = fpi.shape
+                for j in range(i + 1, len(cand)):
+                    bj, bay_j, _oj, _x2, _y2, r0j, c0j, fpj = cand[j]
+                    if bi_i == bj or bay_i != bay_j:
+                        continue
+                    hj, wj = fpj.shape
+                    rlo = max(r0i, r0j); rhi = min(r0i + hi, r0j + hj)
+                    clo = max(c0i, c0j); chi = min(c0i + wi, c0j + wj)
+                    if rlo >= rhi or clo >= chi:
+                        continue
+                    a = fpi[rlo - r0i:rhi - r0i, clo - c0i:chi - c0i]
+                    b = fpj[rlo - r0j:rhi - r0j, clo - c0j:chi - c0j]
+                    if bool(_np.logical_and(a, b).any()):
+                        m.AddBoolOr([xs[i].Not(), xs[j].Not()])
+            m.Maximize(sum(int(areas[cand[i][0]] * 16) * xs[i]
+                           for i in range(len(cand))))
+            sol = cp_model.CpSolver()
+            sol.parameters.max_time_in_seconds = min(
+                2.0, max(0.3, deadline - time.time() - 1.0))
+            sol.parameters.num_search_workers = 1
+            st = sol.Solve(m)
+            if st not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+                return []
+            chosen = [cand[i] for i in range(len(cand)) if sol.Value(xs[i])]
+            chosen.sort(key=lambda c: -areas[c[0]])
+            committed = []
+            for (bi, bay_id, oi, x, y, _r0, _c0, _fp) in chosen:
+                p = procs[bi]
+                exit_t = t + p
+                bay = bays[bay_id]
+                rel = _rel_sched_bbox(sched[bay_id], t, exit_t)
+                nb = _mkblock(bi, blocks_data[bi], x, y, oi)
+                if _can_place(bay, rel, nb, t, exit_t):
+                    place = (bay_id, x, y, oi, t, exit_t)
+                    commit(bi, place)
+                    committed.append((bi, place))
+            return committed
+
         best = None   # ((-area, cost), committed_list)
         for od in (order_atc, order_area, order_con):
             if time.time() > deadline:
@@ -3541,25 +3666,25 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
                 if place is not None:
                     commit(bi, place)         # trial: mutate only, no bookkeeping
                     committed.append((bi, place))
-            area = sum(areas[bi] for bi, _ in committed)
-            cost = 0.0
-            for bi, place in committed:
-                prefs = blocks_data[bi]["bay_preferences"]
-                cost += (w1 * max(0, place[5] - dues[bi])
-                         + w3 * (max(prefs) - prefs[place[0]]))
-            key = (-area, cost)
+            key = evaluate(committed)
             if best is None or key < best[0]:
                 best = (key, list(committed))
-            for bi, place in reversed(committed):   # rollback (exact int occ)
-                bay_id, x, y, oi, en, ex = place
-                raster.remove(bay_id, bi, oi, x, y)
-                s = sched[bay_id]
-                for idx in range(len(s) - 1, -1, -1):
-                    if s[idx][0].block_id == bi:
-                        del s[idx]
-                        break
-                bay_loads[bay_id] -= blocks_data[bi]["workload"]
-                del assignments[bi]
+            rollback(committed)
+        # v22: MPC joint-selection fill competes with the greedy orders under
+        # the same (admitted area, cost) key; min-wins, so worst case it just
+        # costs its solver budget.
+        if mpc and len(ordered) >= 8 and time.time() <= deadline - 1.5:
+            admissible = [bi for bi in ordered
+                          if targets is None or t >= targets[bi]]
+            try:
+                committed = mpc_fill(admissible)
+            except Exception:
+                committed = []
+            if committed:
+                key = evaluate(committed)
+                if best is None or key < best[0]:
+                    best = (key, list(committed))
+                rollback(committed)
         if best is not None:
             for bi, place in best[1]:
                 apply_place(bi, place)
@@ -4771,13 +4896,13 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
         try:
             tick_dl = t_start + 0.55 * window
 
-            def ticket(tg, bm, nm, kap, al, drng=None):
+            def ticket(tg, bm, nm, kap, al, drng=None, mpc=False):
                 raster.reset()
                 a_ = _dispatch_construct(
                     prob_info, bays, bay_u, w1, w2, w3,
                     min(tick_dl, deadline), raster, kappa=kap, gamma=0.5,
                     alpha=al, score_pos=True, rng=drng, targets=tg, beam=bm,
-                    nearmiss=nm)
+                    nearmiss=nm, mpc=mpc)
                 o_ = iobj(a_)
                 push(o_, a_)
                 cands.append((o_, a_))
@@ -4795,6 +4920,14 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                 if time.time() >= t_start + 0.45 * window:
                     break
                 ticket(None, True, 8, kap, al)
+            # v22: MPC joint-admission tickets (CP-SAT compatible-set fill as
+            # a 4th beam order at deep-queue events) on the two hottest
+            # configs; each build pays ~30-60s of solver budget, so they run
+            # before the jitter tail.
+            for kap, al in ((0.5, 0.5), (2.0, 0.5)):
+                if time.time() >= tick_dl:
+                    break
+                ticket(None, True, 8, kap, al, mpc=True)
             _jrng = random.Random(2121)
             ji = 0
             while time.time() < tick_dl and ji < 24:
