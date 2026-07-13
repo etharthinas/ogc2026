@@ -1,3 +1,14 @@
+# myalgorithm_25.py  --  v25 = v24 + DEEP-NESTLE near_k family (16-32)
+# heading the W1 rotation: raw builds measured below every fully-
+# polished banked cell on all six probed rocks (sum -7.4M raw).
+# Also: urgency-weighted MPC objective (mpc=2, probed no-signal,
+# parked unwired).
+# ---------------------------------------------------------------------------
+# myalgorithm_25.py  --  v25 = v24 + urgency-weighted MPC objective
+# (mpc=2 mode; mpc=True/1 unchanged). Wired as ADDITIONAL min-wins
+# variants only (pacing law).
+# ---------------------------------------------------------------------------
+# (v24 header below, kept verbatim for provenance)
 # myalgorithm_24.py  --  v24 = v23 + overhang variants in the deep
 # pipelines (W0-reclaimed 3-way min, W3-giant 2-way min), numeric ovh
 # weight, W1 weight-4 ovh ticket. Basin-diversity-into-polish thesis.
@@ -3664,8 +3675,20 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
                     b = fpj[rlo - r0j:rhi - r0j, clo - c0j:chi - c0j]
                     if bool(_np.logical_and(a, b).any()):
                         m.AddBoolOr([xs[i].Not(), xs[j].Not()])
-            m.Maximize(sum(int(areas[cand[i][0]] * 16) * xs[i]
-                           for i in range(len(cand))))
+            if mpc == 2:
+                # v25: urgency-weighted objective -- pure area-greed measured
+                # myopic (27 raw +275k). Bonus for blocks already late or
+                # nearly late at t (admitting them stops the tardiness bleed;
+                # delaying slack-rich blocks is cheap).
+                def wgt(bi):
+                    late = t + procs[bi] - dues[bi]
+                    u = 24 if late >= 0 else (12 if late >= -2 else 0)
+                    return int(areas[bi] * 16) + int(areas[bi] * u)
+                m.Maximize(sum(wgt(cand[i][0]) * xs[i]
+                               for i in range(len(cand))))
+            else:
+                m.Maximize(sum(int(areas[cand[i][0]] * 16) * xs[i]
+                               for i in range(len(cand))))
             sol = cp_model.CpSolver()
             sol.parameters.max_time_in_seconds = min(
                 2.0, max(0.3, deadline - time.time() - 1.0))
@@ -4957,8 +4980,9 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
             tick_dl = t_start + 0.55 * window
 
             def ticket(tg, bm, nm, kap, al, drng=None, mpc=False,
-                       ovh=False):
+                       ovh=False, nk=3):
                 raster.reset()
+                raster.near_k = nk
                 a_ = _dispatch_construct(
                     prob_info, bays, bay_u, w1, w2, w3,
                     min(tick_dl, deadline), raster, kappa=kap, gamma=0.5,
@@ -4977,8 +5001,21 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
             # (measured spread ~0.4M on 31, sometimes below deterministic).
             base_cfgs = ((0.5, 0.5), (2.0, 0.5), (1.0, 0.0), (0.5, 1.0),
                          (4.0, 0.0), (1.0, 0.5), (0.5, 0.0), (2.0, 1.0))
+            # v25 DEEP-NESTLE family FIRST: near_k 16-32 recovers exact-
+            # feasible anchors the dilated masks hide by up to a block
+            # perimeter; measured raw BELOW every fully-polished banked cell
+            # (38 -1.45M, 39 -2.12M, 33 -1.04M, 26 -1.29M, 31 -0.90M,
+            # 27 -0.64M). Raw dominance justifies heading the rotation: each
+            # ticket pushes its raw build, so these are floor-guaranteed.
+            for kap, al, nk in ((0.5, 0.5, 24), (2.0, 0.5, 16),
+                                (0.5, 1.0, 24), (2.0, 0.5, 32),
+                                (0.5, 0.5, 32), (2.0, 0.5, 24),
+                                (0.5, 1.0, 32), (1.0, 0.0, 16)):
+                if time.time() >= t_start + 0.42 * window:
+                    break
+                ticket(None, True, nk + 8, kap, al, nk=nk)
             for kap, al in base_cfgs:
-                if time.time() >= t_start + 0.45 * window:
+                if time.time() >= t_start + 0.5 * window:
                     break
                 ticket(None, True, 8, kap, al)
             # v22: MPC joint-admission tickets (CP-SAT compatible-set fill as
