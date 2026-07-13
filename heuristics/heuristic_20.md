@@ -195,6 +195,36 @@ conservative-mask scan_scoped and cannot re-create near-miss placements, so
 polish on nm builds is retime-only. Threading nearmiss into the improver
 reinsert path is the 20b compounding lever.
 
+### 20b-1 RESULT (2026-07-13, Mac): hypothesis REFUTED — nm-in-improver is a
+measured ZERO. Implemented: `scan_scoped(with_near=True)` exposes the near
+grid from the same count pass; `nearmiss` threaded through
+`_find_earliest_slot_raster` → `_place_block` → `_repack_window`(+failed
+loop) → `_improve` → improve/polish closures; W1 explorer polish flipped to
+nearmiss=8. Gates: prob_1 @60s byte-exact 18,357; officially feasible.
+Measurements:
+- Same-seed A/B (`probe_20b.py`, nm+beam builds, improve 150s,
+  repack_every=3): 31 (k.5/a.5, build 11,226,247) A=+0, B=+0;
+  39 (k.5/a1.0, build 11,308,768) A=+0, B=+0.
+- End-to-end @600s: 31 = 9,588,760 and 39 = 9,802,536 — BYTE-IDENTICAL to
+  the v20 HEAD controls on the same machine. The nm reinsert never lands an
+  accepted improvement anywhere in the full pipeline.
+Conclusion: polish flatness on nm builds is NOT mask-conservatism in the
+reinsert path; it is the obj-gated LNS saturation itself (same phenomenon as
+the Improvement-5 sweep in ledger_19). Code kept (proven byte-inert, enables
+20b-2); expected yield of 20b-2/3 should be revised down accordingly —
+the queue's remaining density lever is 20b-2 (near cells competing in the
+MAIN scoring pass of the dispatcher, where nm demonstrably pays) and 20b-4
+(MPC joint admission).
+
+Cross-machine note (same code, @600s): Mac vs the v20a bench machine —
+39: 9,802,536 vs 10,253,072 (Mac −450,536 BETTER); 31: 9,588,760 vs
+9,038,459 (Mac +550,301 worse). Per-instance pacing basins differ by ±0.5M
+across machines; single-machine rows undercount the portfolio's true best.
+Robustness note: one stock-v20 prob_31 @600s run under transient load blew
+its deadline (774s) and returned the empty-bay fallback — second observation
+of the overrun failure mode (see robustness/findings_260709.md Finding A);
+the parent-side hard watchdog remains an open hardening item.
+
 kappa x alpha grid (nm=8, beam, raw): per-instance winners VARY —
 31: (0.5, 0.5) = **9,158,172 (t465)**; 39: (0.5, 1.0) = **9,944,600
 (t674)**; 33: (2.0, 0.5) = **8,821,905** (banked 9,566,490). The (2.0, 0.5)

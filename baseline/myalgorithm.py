@@ -693,7 +693,8 @@ def _find_earliest_slot(bay, sched_bay, bi, blk, orients, lb, proc,
 
 
 def _find_earliest_slot_raster(bay, bay_id, sched_bay, bi, blk, orients, lb, proc,
-                               raster, score_pos=True, time_cap=16, pos_cap=28):
+                               raster, score_pos=True, time_cap=16, pos_cap=28,
+                               nearmiss=0):
     """v13 RASTER-WINDOWED REPAIR: earliest feasible (orient,x,y,entry) reached
     by a full-position raster scan instead of AABB-corner enumeration -- the
     density lever inside the improver. For each candidate entry time t, build a
@@ -716,19 +717,39 @@ def _find_earliest_slot_raster(bay, bay_id, sched_bay, bi, blk, orients, lb, pro
         for oi in orients:
             if not _orient_fits(blk, oi, bay):
                 continue
-            feas, cx0, cy0, occ_fp = raster.scan_scoped(bay_id, actives, bi, oi)
-            if feas is None or not feas.any():
-                continue
-            cells = _order_cells(raster, feas, cx0, cy0, bi, oi,
-                                 raster.W[bay_id], occ_fp, score_pos, None)
-            tried = 0
-            for (x, y) in cells:
-                nb = _mkblock(bi, blk, x, y, oi)
-                if _can_place(bay, relx, nb, t, exit_t):
-                    return (oi, x, y, t)
-                tried += 1
-                if tried >= pos_cap:
-                    break
+            if nearmiss > 0:
+                feas, cx0, cy0, occ_fp, near = raster.scan_scoped(
+                    bay_id, actives, bi, oi, with_near=True)
+            else:
+                feas, cx0, cy0, occ_fp = raster.scan_scoped(bay_id, actives,
+                                                            bi, oi)
+                near = None
+            if feas is not None and feas.any():
+                cells = _order_cells(raster, feas, cx0, cy0, bi, oi,
+                                     raster.W[bay_id], occ_fp, score_pos, None)
+                tried = 0
+                for (x, y) in cells:
+                    nb = _mkblock(bi, blk, x, y, oi)
+                    if _can_place(bay, relx, nb, t, exit_t):
+                        return (oi, x, y, t)
+                    tried += 1
+                    if tried >= pos_cap:
+                        break
+            # v20b Improvement A in the REPAIR path: anchors the conservative
+            # mask rejects by <= near_k dilated cells, exact-gated (a pass is
+            # officially feasible). nearmiss=0 default = byte-inert.
+            if near is not None and near.any():
+                ncells = _order_cells(raster, near, cx0, cy0, bi, oi,
+                                      raster.W[bay_id], occ_fp, score_pos,
+                                      None)
+                tried = 0
+                for (x, y) in ncells:
+                    nb = _mkblock(bi, blk, x, y, oi)
+                    if _can_place(bay, relx, nb, t, exit_t):
+                        return (oi, x, y, t)
+                    tried += 1
+                    if tried >= nearmiss:
+                        break
     return None
 
 
@@ -865,7 +886,7 @@ def _window_util(sched_bay, entry, exit_t, bay_area):
 def _place_block(bi, blk, bays, sched, bay_loads, bay_u, w1, w2, w3,
                  pos_cap=40, tardy_cap=8, dense=True, forced=False,
                  bay_order=None, slot_time_cap=40, slot_pos_cap=24,
-                 util_gamma=0.0, raster=None):
+                 util_gamma=0.0, raster=None, nearmiss=0):
     release = int(blk["release_time"])
     due = int(blk["due_date"])
     proc = int(blk["processing_time"])
@@ -933,7 +954,8 @@ def _place_block(bi, blk, bays, sched, bay_loads, bay_u, w1, w2, w3,
                 slot = _find_earliest_slot_raster(
                     bay, bay_id, sched[bay_id], bi, blk, orients, lb, proc,
                     raster, score_pos=True,
-                    time_cap=min(slot_time_cap, 16), pos_cap=slot_pos_cap)
+                    time_cap=min(slot_time_cap, 16), pos_cap=slot_pos_cap,
+                    nearmiss=nearmiss)
             else:
                 slot = _find_earliest_slot(bay, sched[bay_id], bi, blk, orients,
                                            lb, proc, time_cap=slot_time_cap,
@@ -1160,7 +1182,7 @@ def _destroy_window(cur, blocks_data, rng):
 
 def _repack_window(prob_info, src, bays, bay_u, w1, w2, w3, raster, rng,
                    deadline, forced=False, k_orders=4, max_destroy=30,
-                   mode='sbay', win_scale=2.0):
+                   mode='sbay', win_scale=2.0, nearmiss=0):
     """Pick the most congested (bay, time-window) from `src`, destroy every block
     of that bay whose [entry,exit) intersects it, and rebuild the destroyed set
     jointly (k trial orders, greedy earliest-feasible raster placement against the
@@ -1257,7 +1279,7 @@ def _repack_window(prob_info, src, bays, bay_u, w1, w2, w3, raster, rng,
             proc = procs[bi]
             slot = _find_earliest_slot_raster(
                 bay, bj, work_bay, bi, blk, _unique_orients(blk),
-                rels[bi], proc, raster, score_pos=True)
+                rels[bi], proc, raster, score_pos=True, nearmiss=nearmiss)
             if slot is None:
                 failed.append(bi)
                 continue
@@ -1286,7 +1308,7 @@ def _repack_window(prob_info, src, bays, bay_u, w1, w2, w3, raster, rng,
             blk = blocks_data[bi]
             place = _place_block(bi, blk, bays, sched2, loads2, bay_u, w1, w2, w3,
                                  forced=forced, slot_time_cap=40, slot_pos_cap=30,
-                                 raster=raster)
+                                 raster=raster, nearmiss=nearmiss)
             if place is None:
                 place = _force_place(bi, blk, bays, sched2)
             _add(sched2, loads2, work, bi, blk, place)
@@ -2246,7 +2268,8 @@ def _exact_pack_bay(prob_info, src, bays, bay_u, w1, w2, w3, raster, rng,
 
 def _improve(prob_info, assignments, bays, bay_u, w1, w2, w3, deadline, forced,
              seed=4242, sa=False, on_best=None, inbox=None, raster=None,
-             repack_every=0, xbay=False, repack_win_scale=2.0, deep=False):
+             repack_every=0, xbay=False, repack_win_scale=2.0, deep=False,
+             nearmiss=0):
     """Basin-hopping destroy/repair. Tracks `best` separately from the working
     `cur`; returns `best` -> monotone in the RESULT. Diversifies destroy mode and
     repair ordering, and applies an escape "kick" (a larger destroy accepted even
@@ -2335,7 +2358,8 @@ def _improve(prob_info, assignments, bays, bay_u, w1, w2, w3, deadline, forced,
             try:
                 work = _repack_window(prob_info, cur, bays, bay_u, w1, w2, w3,
                                       raster, rng, deadline, forced=forced,
-                                      mode=mode, win_scale=ws, max_destroy=md)
+                                      mode=mode, win_scale=ws, max_destroy=md,
+                                      nearmiss=nearmiss)
             except Exception:
                 work = None
             if work is not None and len(work) == n:
@@ -2438,7 +2462,8 @@ def _improve(prob_info, assignments, bays, bay_u, w1, w2, w3, deadline, forced,
             use_raster = raster if (forced or best_tardy > 0) else None
             place = _place_block(bi, blk, bays, sched, bay_loads, bay_u, w1, w2, w3,
                                  forced=forced, slot_time_cap=40, slot_pos_cap=30,
-                                 bay_order=bo, raster=use_raster)
+                                 bay_order=bo, raster=use_raster,
+                                 nearmiss=nearmiss)
             if place is None:
                 place = _force_place(bi, blk, bays, sched)
             _add(sched, bay_loads, work, bi, blk, place)
@@ -2981,16 +3006,21 @@ class _Raster:
                 return None
         return nc[1]
 
-    def scan_scoped(self, bay, actives, bi, oi):
+    def scan_scoped(self, bay, actives, bi, oi, with_near=False):
         """v13 raster-windowed repair primitive. Feasible-anchor grid for
         placing (bi,oi) in `bay` against ONLY `actives` = [(bi2,oi2,x2,y2),...]
         (the blocks time-overlapping the candidate insertion), WITHOUT touching
         self.occ. Returns (feas (R,C) bool | None, cx0, cy0, occ_fp (H,W) bool).
-        Sound in exactly the same conservative sense as scan()."""
+        Sound in exactly the same conservative sense as scan().
+        v20b: with_near=True appends a 5th element — the near-miss anchor grid
+        (0 < overlap count <= near_k), same mapping, byproduct of the same
+        count grid; every near anchor MUST be exact-gated by _can_place."""
         H, W = self.H[bay], self.W[bay]
         mask, cx0, cy0 = self.mask(bi, oi)
         nl, MH, MW = mask.shape
         if MH > H or MW > W:
+            if with_near:
+                return None, cx0, cy0, None, None
             return None, cx0, cy0, None
         R = H - MH + 1; C = W - MW + 1
         layers = {}                            # l -> bool (H,W)
@@ -3011,6 +3041,9 @@ class _Raster:
             if nl2 - 1 > maxL:
                 maxL = nl2 - 1
         if maxL < 0:
+            if with_near:
+                return (_np.ones((R, C), dtype=bool), cx0, cy0,
+                        _np.zeros((H, W), dtype=bool), None)
             return _np.ones((R, C), dtype=bool), cx0, cy0, \
                 _np.zeros((H, W), dtype=bool)
         union_ge = [None] * (maxL + 1)
@@ -3033,6 +3066,9 @@ class _Raster:
                 continue
             win = _swv(Vk.astype(_np.int32), (MH, MW))
             total += _np.einsum('rcij,ij->rc', win, mk.astype(_np.int32))
+        if with_near:
+            return ((total == 0), cx0, cy0, occ_fp,
+                    _np.logical_and(total > 0, total <= self.near_k))
         return (total == 0), cx0, cy0, occ_fp
 
 
@@ -4117,7 +4153,7 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                                           ) else None
 
     def improve(assign, seed, until=None, repack_every=0, win_scale=2.0,
-                xbay=None):
+                xbay=None, nearmiss=0):
         dl = deadline if until is None else min(until, deadline)
         # v15: xbay default follows `forced` (giant W3 repack specialist gets it;
         # non-forced fallback improves stay v14). polish passes it explicitly
@@ -4128,7 +4164,8 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
         r, o = _improve(prob_info, assign, bays, bay_u, w1, w2, w3,
                         dl, forced, seed=seed, on_best=push, inbox=inbox,
                         raster=raster, repack_every=repack_every,
-                        xbay=xb, repack_win_scale=win_scale, deep=reclaim)
+                        xbay=xb, repack_win_scale=win_scale, deep=reclaim,
+                        nearmiss=nearmiss)
         push(o, r, force=True)
         return o, r
 
@@ -4223,7 +4260,7 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
         push(o, a)
         return o, a
 
-    def polish(assign, seed, repack_every=0, alts=None):
+    def polish(assign, seed, repack_every=0, alts=None, nearmiss=0):
         """v15 r2 polish. Three regimes:
 
         GIANTS (forced, n>=250) -> EXACT v14 envelope (improve -> CP-SAT ->
@@ -4268,7 +4305,7 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                     src = alts[ai]
                 o_, r_ = improve(src, cs, until=cyc_dl,
                                  repack_every=repack_every, win_scale=sc,
-                                 xbay=xb)
+                                 xbay=xb, nearmiss=nearmiss)
                 if o_ < ob:
                     base, ob = r_, o_
 
@@ -4276,7 +4313,7 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
             # -- EXACT v14 polish (see docstring) ------------------------------
             o1, r1 = improve(assign, seed, until=cp_at,
                              repack_every=repack_every, win_scale=2.0,
-                             xbay=False)
+                             xbay=False, nearmiss=nearmiss)
             base, ob = r1, o1
             try:
                 rc = _cpsat_retime(prob_info, r1, bays, blocks_data,
@@ -4291,7 +4328,7 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
             if time.time() < z3_at - 2.0:
                 o2, r2 = improve(base, seed + 1, until=z3_at,
                                  repack_every=repack_every, win_scale=2.0,
-                                 xbay=False)
+                                 xbay=False, nearmiss=nearmiss)
                 if o2 < ob:
                     base, ob = r2, o2
         elif forced:
@@ -4309,7 +4346,7 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
         else:
             o1, r1 = improve(assign, seed, until=cp_at,
                              repack_every=repack_every, win_scale=2.0,
-                             xbay=False)
+                             xbay=False, nearmiss=nearmiss)
             if o1 < ob:
                 base, ob = r1, o1
             try:
@@ -4715,7 +4752,7 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
             pass
         if cands:
             polish(min(cands, key=lambda c: c[0])[1], seed=2077,
-                   repack_every=3, alts=pick_alts(cands))
+                   repack_every=3, alts=pick_alts(cands), nearmiss=8)
             return
         # else: fall through to the legacy W1 path below
 
