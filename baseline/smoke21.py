@@ -1,6 +1,6 @@
 import sys, json, time
 sys.path.insert(0, '.')
-import myalgorithm_21 as M
+import myalgorithm_25 as M
 from utils import check_feasibility
 
 if __name__ == "__main__":
