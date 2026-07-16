@@ -85,4 +85,77 @@ constraints; record the realized-vs-fluid order edit distance for the ledger.
 
 ## Results
 
-(pending)
+### 29a spot (2026-07-16) — flat, with a signal
+
+myalgorithm_29a.py (order-forced dispatch + replay-search stream in the W3
+slot; ORDER_LOOKAHEAD=3, ORDER_STALL=8, rng 9291). prob_1 @60s guard:
+18,357 = banked. prob_38 = 36,351,493, prob_27 = 24,972,962 — both
+byte-flat totals. BUT the OGC_DEBUG telemetry shows prob_27 polish slices
+reaching **obj1 = 1725** (banked = 1726) three times — the first sub-banked
+tardiness basin ever sighted on 27 — losing the min-wins race on obj2/obj3.
+Reading: the order-forced machinery soundly realizes perturbed admission
+sequences at competitive quality, but LOCAL perturbations of the realized
+order move single tardiness units (same local-optimum wall as the improver,
+one level up). The escalation is a GLOBALLY different order → 29c
+(fluid-relaxation order), which the 1725 sighting de-risks. Bench-ops note:
+two background-task kills orphaned one 29a spot run (parent dead, workers
+spinning, empty log ~45 min); benches now launch detached via Start-Process
+(see env memory).
+
+### 29b spot (2026-07-16) — flat; polish depth is NOT the binding constraint
+
+myalgorithm_29b.py (pooled 70/30 top-2 polish on giants, re-anchored slice
+boundaries — v28's absolute cp_at=0.62w left late-finishing giant builds a
+near-empty first improve leg). prob_1 @60s guard: 18,357 = banked.
+prob_38 = 36,351,493 and prob_39 = 8,389,519 byte-flat (prob_27 leg is
+gate-excluded, coupling check only). Even with real descent rounds in leg 1
+and a fresh 30% slice on the runner-up basin, nothing moved. Combined with
+28a/28f: the v25 giant incumbents are locally optimal against BOTH deeper
+descent AND randomized basin-hops — per the ledger_27 verdict the residual
+mass is reachable only through a globally different admission SEQUENCE.
+Record instruction honored: stop re-pacing polish forever.
+
+### 29c spot (2026-07-16) — flat; experiment invalid (loader, not hypothesis)
+
+myalgorithm_29c.py (fluid-order W2 ticket from a NEW greedy ATC area-
+capacity loader @0.7). prob_1 guard: 18,357 = banked. Totals byte-flat
+(38: 36,351,493 / 27: 24,972,962). Telemetry says WHY, and it is not the
+certificate hypothesis: the greedy loader's own relaxation tardiness is
+4439 (38) / 3163 (27) — WORSE than the banked realized obj1 (2569/1726)
+and nowhere near the CP-SAT certificates (1219/615, from `_plan_targets`,
+which was never wired to an ORDER — v22/23 only ever gated TIMES with it).
+Forcing a bad order realized bad builds (48.0M / 32.1M; mean_rank_delta
+30.8 / 21.6) that min-wins correctly discarded. 29c tests the loader, not
+the certificate → 29d re-derives the forced order from `_plan_targets`
+(cap_frac=0.7, ≤6s CP-SAT budget, skip ticket on timeout).
+
+### 29d spot (2026-07-16) — 38 flat, 27 REGRESSED to the fallback basin; ORDER-FORCING FAMILY DEAD
+
+myalgorithm_29d.py (plan-order ticket from `_plan_targets` @0.7, ≤6s).
+prob_38 = 36,351,493 flat; telemetry plan_obj1=2736 (6s CP-SAT can't reach
+the 1219 certificate), realized_obj=63.0M, rank_delta=50.8. prob_27 =
+**25,403,468 (+430,506)** — EXACTLY 28b's regression value; telemetry
+plan_obj1=1334 (genuinely better-sequenced than banked 1726!),
+realized_obj=35.2M (+41%), rank_delta=26.8.
+
+Two conclusions:
+1. **Order-forcing is dead.** Realizable admission orders live in a narrow
+   neighborhood of the champion's order (29a: ±1 obj1 unit, competitive);
+   geometry-blind orders — even ones the relaxation scores better (1334 <
+   1726) — realize 30–75% worse because co-resident geometric compatibility
+   is what the champion's order encodes. The relax@0.7 sequencing
+   certificates (1219/615) are geometry-free mirages, same species as the
+   19-era fluid LBs. Joint order+geometry is the only remaining escape
+   class for the giants, and no tractable mechanism for it is known.
+2. **NEW LAW — cross-worker race displacement:** prob_27 has two attractor
+   basins: 24,972,962 (banked, W-race won) and 25,403,468 (fallback; 28b
+   and 29d land there through UNRELATED mechanisms). Any latency added
+   inside a worker's loop (29d's ≤6s CP-SAT solve; 28b's swap scans) shifts
+   its island-inbox push timing and can flip the race. Min-wins does NOT
+   protect against this. W2/W1 tail additions must be effectively free
+   (sub-second, 29c-class) or run after the race is settled.
+
+### Final: v29 == v25 cells (124,581,895). No promotion. Order-space,
+polish-depth, and improver-escape families all measured dead in v28+v29.
+Next: measure-first on the mid-tier {26,31,33,37,39} (~38.6M mass, never
+diagnosed) — packing-bound or sequencing-bound? (mid_diag_driver.py)
