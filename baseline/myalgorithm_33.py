@@ -18,10 +18,16 @@
 #     iff check_feasibility passes AND objective < winner's; otherwise return the
 #     winner exactly as v25 does -> byte-identical.
 #   * On forced instances (workers run to deadline) remaining < MERGE_MIN so the
-#     gate never opens: output is byte-identical to v25. Retention adds zero work
-#     on the drain hot path (post-hoc dedup at the tail), so the race is
-#     untouched. Merge machinery ported inline (self-contained; no imports of
-#     radical_s4_merge or myalgorithm_25). See heuristic_32.md (S4).
+#     gate never opens. To protect lottery-sensitive FORCED instances (prob_32)
+#     from ANY parent-side perturbation, the forced classification is captured
+#     up front (reusing v25's existing insurance-build _is_forced call -- no new
+#     call) and the parent verify loop BRANCHES: forced -> v25's exact verify
+#     loop token-for-token (no _merge_tail, no dedup, no extra held references);
+#     non-forced -> v25 loop + the merge tail. The parent's race-time code
+#     (giant check, spawn, insurance, drain loop + island rebroadcast) is
+#     byte-identical to v25 on every instance -- the merge is strictly post-race
+#     and non-forced-only. Merge machinery ported inline (self-contained; no
+#     imports of radical_s4_merge or myalgorithm_25). See heuristic_32.md (S4).
 # =============================================================================
 # (v25 header below, kept verbatim for provenance)
 # myalgorithm_25.py  --  v25 = v24 + DEEP-NESTLE near_k family (16-32)
@@ -5556,6 +5562,15 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
     bay_u = _bay_u(bays)
 
     cands = []
+    # v33: forced classification, captured ONCE. This is the SAME _is_forced
+    # value v25 already computes for the insurance build's `forced=` arg (reused
+    # below), so NO extra _is_forced call is added -- byte-neutral. On FORCED
+    # instances the merge gate is closed, so the parent runs v25's exact verify
+    # loop (no merge scaffolding, no dedup, no extra held references); the merge
+    # code executes on NON-forced instances only. The parent's race-time code
+    # (giant check, spawn, insurance, drain loop + island rebroadcast) is left
+    # byte-identical to v25 for every instance.
+    _forced = _is_forced(prob_info, bays)
     # Insurance: while workers spin up, the otherwise-idle parent builds one
     # cheap non-dense EDD construction. If memory pressure ever stalls all
     # workers (seen on prob_38: 4 dense builds thrashed 16GB and the queue came
@@ -5565,7 +5580,7 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
         _reset_caches()
         quick = _construct(prob_info, _edd_order(blocks_data), bays, bay_u,
                            w1, w2, w3, t_start, t_start,  # deadline past->sparse
-                           forced=_is_forced(prob_info, bays))
+                           forced=_forced)
         cands.append((_objective(quick, blocks_data, bays, bay_u,
                                  w1, w2, w3)[0], quick))
         _reset_caches()  # parent doesn't search further; free the memory
@@ -5644,6 +5659,35 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
     # eaten past hard_stop under load, which otherwise threw away a ready 15M
     # solution for the 1.9e9 fallback.
     abs_stop = t_start + timelimit - 0.3
+    if _forced:
+        # v33 FORCED PATH: TOKEN-IDENTICAL to v25's verify loop. No _merge_tail,
+        # no dedup, no extra references -- the merge gate is closed on forced
+        # instances anyway (see _merge_tail's _is_forced check), so nothing is
+        # lost, and lottery-sensitive forced instances (prob_32) are protected
+        # from any parent-side perturbation.
+        for _, assign in cands:
+            now = time.time()
+            if now > abs_stop:
+                break
+            if _nver >= 1 and now > hard_stop:
+                if _dbg:
+                    print(f"[parent] hard_stop hit after {_nver} verifies", flush=True)
+                break
+            _nver += 1
+            sol = {"operations": _build_operations(assign)}
+            try:
+                res = check_feasibility(prob_info, sol)
+            except Exception:
+                continue
+            if res["feasible"]:
+                return sol
+        # Last resort: empty-bay (structurally feasible).
+        return {"operations": _build_operations(fallback)}
+    # v33 NON-FORCED PATH: v25 verify loop + self-gating merge tail. Fires only
+    # when the portfolio returned with spare time (>= MERGE_MIN) and >= 3
+    # distinct candidates exist; otherwise returns `assign` unchanged, so the
+    # output is byte-identical to v25 (_build_operations of the same winning
+    # assignment == `sol`).
     for w_obj, assign in cands:
         now = time.time()
         if now > abs_stop:
@@ -5659,11 +5703,6 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
         except Exception:
             continue
         if res["feasible"]:
-            # v33: self-gating merge tail. Fires only when the portfolio
-            # returned with spare time (>= MERGE_MIN) and >= 3 distinct
-            # candidates exist; otherwise returns `assign` unchanged, so the
-            # output is byte-identical to v25 (_build_operations of the same
-            # winning assignment == `sol`).
             try:
                 final_assign = _merge_tail(
                     prob_info, bays, bay_u, w1, w2, w3, cands, assign,

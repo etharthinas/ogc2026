@@ -72,4 +72,15 @@ Kill: < −50k total across all three.
 
 ## Results
 
-(pending)
+### 31a spot (2026-07-16) — fully byte-flat; killed
+
+myalgorithm_31.py (epoch reset on convergence: W1/W2/W3 armed with +7777
+seed shifts, EPOCH_AFTER=120/EPOCH_MIN_REM=90; W0 unarmed anchor). Spot
+{27,26,31,33} @600s: 24,972,962 / 8,551,513 / 8,124,019 / 7,734,338 —
+all byte-flat. Even a completely fresh construction epoch spent in the
+measured-wasted post-convergence budget cannot beat the incumbent basins.
+Closes the "fresh diversity" family: the eligible-8 are at the
+architecture floor at 600s. 31b (reservation shuffle) and 31c (obj2/3
+post-pass) superseded by the heuristic_32 radical epoch; 31c's obj2/3
+target is being captured by v33's merge tail instead (prob_1 −9,508 was
+entirely obj2/obj3).
