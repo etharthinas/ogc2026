@@ -74,6 +74,13 @@ measure, don't guess.
 
 ## Improvement B — post-multiplier knob re-exploitation (the epoch's harvest)
 
+**[SUPERSEDED by the 27a saturation finding: the eligible-8 came back
+byte-identical under x3.56 scans → count caps saturate and polish converges at
+600s; more draws/depth is predicted dead and risks the frozen 38 coupling.
+Do not run these sweeps without a specific contrary signal. The freed wall-
+clock should fund NEW MECHANISMS (C, or restart-from-perturbed-base), not
+more of the same. ledger_27_diag (in flight) decides the mechanism family.]
+
 Every tuned knob was optimized under the 0.3 iters/s regime. Once A lands,
 re-sweep the cheap dimensions on {38,27} only:
 - near_k in the W1 family: {32, 48, 64} tickets now complete without

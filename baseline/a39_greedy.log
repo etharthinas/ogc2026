@@ -1,0 +1,2 @@
+prob_39: start=12,361,461 mode=greedy seed=7777 forced=True
+ GREEDY =     12,361,461  (250.6s) d_start=+0 feasible=True

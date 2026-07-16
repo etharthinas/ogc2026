@@ -1,0 +1,2 @@
+prob_39: n=250 bays=3 forced=True start=12,361,461  L=50 ruin=[0.03,0.1] seed=39
+LAHC   =     12,361,461  (250.4s) it=64 acc=56 thr=0.3/s d_start=+0 feasible=True

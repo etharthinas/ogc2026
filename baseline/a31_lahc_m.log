@@ -1,0 +1,2 @@
+prob_31: n=200 bays=4 forced=True start=11,055,999  L=100 ruin=[0.05,0.15] seed=41
+LAHC   =     11,055,999  (200.1s) it=44 acc=0 thr=0.2/s d_start=+0 feasible=True

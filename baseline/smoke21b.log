@@ -1,0 +1,9 @@
+[improve] rounds=3 n_restart=0 n_rebal=0 best_o1=1237.0 since_o1=2
+smoke 31@90s: True 19,208,122 54s
+[improve] rounds=0 n_restart=0 n_rebal=0 best_o1=670.0 since_o1=0
+[improve] rounds=3 n_restart=0 n_rebal=0 best_o1=1237.0 since_o1=2
+smoke 31@90s: True 19,208,122 56s
+[improve] rounds=1 n_restart=0 n_rebal=0 best_o1=1237.0 since_o1=0
+smoke 31@90s: True 19,208,122 72s
+[parent] ncands=8 elapsed=240.7 hard_stop_in=-151.7 best5=['1.15e+07', '1.16e+07', '1.16e+07', '1.05e+08', '1.17e+08']
+smoke 31@90s: True 3,708,392,930 241s

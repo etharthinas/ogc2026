@@ -1,0 +1,3 @@
+construct best = 20,856,137 (99.3s)
+WARM prob_31 = 19,948,914  (220.1s)  feasible=True  obj1=1293.0
+saved -> warm_31.json
