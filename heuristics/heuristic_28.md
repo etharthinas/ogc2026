@@ -87,4 +87,77 @@ Kill: both flat.
 
 ## Results
 
-(pending)
+### 28a spot (2026-07-16, quiet machine, serial)
+
+prob_1 @60s guard: 18,357 = banked exactly (51.1s, feasible). Giants @600s:
+
+| inst | 28a | v25 banked | delta |
+|---|---|---|---|
+| prob_38 | 36,351,493 | 36,351,493 | 0 (byte-flat) |
+| prob_27 | 24,972,962 | 24,972,962 | 0 (byte-flat) |
+| prob_39 | 8,389,519 | 8,389,519 | 0 (byte-flat) |
+
+**Byte-flat everywhere** — restarts+rebalance either never fire (gate
+since_o1 >= 75 unreached) or fire and never beat the incumbent (best is
+monotone, so flat is the guaranteed floor). Distinguishing via OGC_DEBUG
+n_restart counters piggybacked on the 28b spot run (same constants in that
+file). FRAC-sweep decision deferred until then. NOTE: the header-advertised
+"every 2nd restart uses volume-normalized-ATC rebuild order" variant is NOT
+in the code (restarts always shuffle) — spare knob if debug shows restarts
+fire-but-lose; n_rebal debug counter also still never incremented.
+
+### 28b spot (2026-07-16) — KILLED, regressive
+
+myalgorithm_28b.py (blocker-informed tardy swap destroy, SWAP_EVERY=4,
+BLOCKER_CAP=3, single-bay, near-anchors only). prob_1 @60s guard: 18,357 =
+banked. Giants @600s:
+
+| inst | 28b | v25 banked | delta |
+|---|---|---|---|
+| prob_38 | 38,247,522 | 36,351,493 | **+1,896,029** |
+| prob_27 | 25,403,468 | 24,972,962 | **+430,506** |
+
+obj1 rose on both (38: 2569→2694; 27: 1726→1754). Mechanism: the swap fires
+every 4th round from round 4 — on round-starved improver slices (see debug
+below) it STEALS descent rounds from the classic destroy modes; the move
+itself rarely lands (saturated bays). Cap sweep {2} skipped — the failure is
+cadence/round-stealing, not blocker-set size. Same mechanism class as the v9
+eager-plateau hazard. LAW reinforced: on giants, every improver round is
+descent-critical; any new move must ADD rounds' value, not replace them.
+
+### 28c spot (2026-07-16) — flat
+
+myalgorithm_28c.py (rollout admission B=3/H=15/QDEPTH=8 in W3 giant first
+seed). prob_1 @60s guard: 18,357 = banked. prob_38 = 36,351,493, prob_39 =
+8,389,519 — both byte-flat. Second consecutive byte-flat modification of
+this slot (after 26b): the W3 first seed NEVER wins the obj-gated race —
+"free real estate" is free because it is WORTHLESS. Do not deliver
+mechanisms there again; a rollout test that can actually bank must run in a
+winning pipeline (W1/W2 giant) under explicit obj-gating.
+
+### OGC_DEBUG improver telemetry (from 28b run; same restart constants as 28a)
+
+prob_38 improve slices: rounds = 3–17, since_o1 <= 16 → the since_o1>=75
+restart gate is STRUCTURALLY UNREACHABLE on 38 (round-starved slices, even
+at x3.56 scan speed). prob_27 slices: rounds = 76–127, n_restart = 1–2 per
+slice → restarts DO fire on 27-class and always lose (fire-and-lose).
+n_rebal counter was never incremented (bug) so rebalance telemetry is
+unknown. Consequence: improver-level escapes can never touch 38; 28f
+calibration variant (RESTART_AFTER=30/EVERY=15 + ATC rebuild order on every
+2nd fire + n_rebal fix) spot-tested on 27 only.
+
+### 28f spot (2026-07-16) — flat; v28 series CLOSED
+
+prob_27 @600s = 24,972,962 (byte-flat). Telemetry: n_restart up to 18 per
+slice, slices up to 291 rounds with since_o1 = 291 — restarts fired densely
+under BOTH rebuild orders (shuffled and volume-normalized-ATC) and not one
+ever improved obj1. n_rebal = 0 with the fixed counter: cross-bay rebalance
+NEVER fires (since_best plateau of 80 is never reached — tiny obj2/obj3
+gains keep resetting it). VERDICT: improver-level basin-hopping cannot
+escape these optima, period. The v25 giant incumbents are locally optimal
+against 0.45-fraction randomized rebuilds; the sequencing lever must be
+pulled at CONSTRUCTION (admission order), not in the improver → heuristic_29.
+
+### Final: v28 == v25 cells (124,581,895). No promotion. Files kept:
+myalgorithm_28.py (28a, byte-neutral), myalgorithm_28b.py (KILLED, do not
+revive the cadence), myalgorithm_28c.py (flat), myalgorithm_28f.py (flat).
