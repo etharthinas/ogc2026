@@ -166,7 +166,15 @@ is closed (extends the v18-era 2x finding to 3x on v25 machinery).
 
 ### FINAL EPOCH STATE (2026-07-17)
 
-Frontier: v33 = 124,572,186 (row `algorithm 33`, myalgorithm.py).
+Frontier after full harvest: **v33 = 124,336,687** (row `algorithm 33
+final`). The non-forced sweep (20 cells @600s) banked −235,499 across 15
+cells — biggest: 9 −46,485 (−44%), 12 −46,305 (−33%), 16 −33,702 (−43%),
+5 −22,957, 4 −17,437 (−49%), 22 −16,085, 11 −15,470, 7 −14,245,
+10 −10,024; flat: 6/13/18/19/36 (13 was +56 run noise, banked kept).
+With prob_1 −9,508 and 29 −201, the merge tail's total value =
+**−245,208**. Every merge accept passed the official checker.
+
+Previous frontier line (pre-harvest): v33 = 124,572,186 (row `algorithm 33`, myalgorithm.py).
 Goal <110M: every constructible route measured closed on the forced mass
 (~103M): 10 single-axis mechanisms (v28-30), fresh epochs (31a), 4
 paradigm rewrites (S1-S4 standalone), cross-paradigm recombination,
