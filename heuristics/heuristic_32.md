@@ -127,4 +127,24 @@ not-forced, ≥3 candidates, ≥6s tail; CP-SAT warm-started, official-check
 accepted). prob_1 @600s (row conditions): **8,849 vs banked 18,357 =
 −9,508 (−52%)**, merge fired with 41.3s tail, 10 candidates. @60s the
 tail is only ~8s and the merge finds nothing (gain 0, harmless). Mid-tier
-spot {21,28,32,34,40} (13.2M mass) running.
+spot {21,28,32,34,40}: 21/28/34 fired-gain-0, 32 initially +191k from a
+forced-path displacement (FIXED: forced path made token-identical to v25;
+prob_32 verified restored), 40 flat. Non-forced sample {20,24,25,29,35}:
+29 banked −201, rest fired-gain-0. v33 PROMOTED: row `algorithm 33` =
+124,572,186 (−9,709), myalgorithm.py = v33.
+
+### Pool-diversity ceiling experiment (exp_pool_diversity.py, 2026-07-17) — CLOSED
+
+Control (champion + 14-15 v25 candidates) vs FULL (+ 9-10 diverse solutions
+from S1/S2/S3; pool 18.2/18.1 avg placements per block, ~1,500
+diverse-exclusive), 300s CP-SAT, offline:
+- **prob_27: control = full = champion exactly.** Hint accepted, rich pool,
+  generous solve → ZERO recombination value.
+- **prob_26: the model cannot represent the champion** — full merge's best
+  (10.44M) is WORSE than its own hint (8.55M), meaning the pairwise
+  space-time-crane compatibility abstraction excludes the true schedule
+  (crane feasibility on dense instances depends on 3-way replay ORDER that
+  pairwise constraints cannot capture).
+VERDICT: cross-paradigm recombination on forced instances is dead — by
+absence of value (27) and by model inexpressibility (26). S4's scope is
+final: non-forced tail only.
