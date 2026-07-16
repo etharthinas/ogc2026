@@ -72,4 +72,52 @@ Spot {26} alone @600s. Kill: flat after one aim-policy sweep.
 
 ## Results
 
-(pending)
+### 30a/30b spots (2026-07-16) — KILLED (fired-and-lost), plus a wiring law
+
+myalgorithm_30.py (height-utilization contact scoring HMATCH_W=4 + tallfirst
+tie-break, appended W1+W2 trios). prob_1 guard byte-exact. Spots byte-flat:
+prob_26 = 8,551,513, prob_37 = 5,807,047. Sweep myalgorithm_30s.py
+(HMATCH_W=12 + fire diagnostics) on 26: byte-flat again, with the decisive
+telemetry:
+
+- **W1-APPEND IS STRUCTURALLY DEAD on 26-class: `[w1 trio] ji=0
+  rem=-0.3s`** — the W1 explorer's entire ticket budget is consumed by the
+  v25 rotation before even the jitter tail runs (0 of 24 jitter draws!).
+  Append-only tickets in W1 can never fire there. (The v25 near_k family
+  won by HEADING the rotation — a promotion-time displacement, not an
+  append.)
+- W2 trio fired 3/3 (~13s/build, 153s spare) at both HMATCH_W=4 and 12 and
+  LOST min-wins both times → anchor-level height steering, delivered
+  through W2 dispatch+polish, cannot beat the incumbent basin.
+
+Reading: under saturation pressure the dispatcher admits whatever fits
+wherever it fits; marginal anchor-score nudges do not preserve tall bands
+(every admission immediately consumes the best gap). Defragmentation likely
+needs a RETROSPECTIVE move (eject the guillotiners) → 30c, or joint
+restructuring beyond single-axis perturbation.
+
+### 30c spot (2026-07-16) — flat; v30 series CLOSED
+
+myalgorithm_30c.py (band-repair destroy: deterministic guillotiner ejection
+at peak-queue t*, tallest-first hmatch reinsertion, gate = 26-only via area
+ratio 3.62 vs cut 3.85; prob_27 byte-identity verified under deterministic
+clock). prob_26 @600s = 8,551,513 byte-flat. The diagnostic-aimed
+retrospective ejection also cannot beat the incumbent basin: destroyed
+guillotiners re-place into the same shredded structure (or the repair's
+obj-gate rejects the intermediate). prob_26's 48%-free-but-blocked
+structure survives every move shape available to the improver.
+
+### Final: v30 == v25 cells (124,581,895). No promotion.
+
+Height-fragmentation is REAL (measured) but UNEXPLOITABLE with single-axis
+moves: prospective anchor steering fired-and-lost (30a/b), retrospective
+ejection flat (30c). The fragmentation is an emergent property of the
+whole admission trajectory under queue pressure — like the giants'
+sequencing, it resists everything short of joint restructuring.
+
+Day tally (v28+v29+v30, 2026-07-16): TEN mechanisms measured across every
+available axis — admission order (3 forms), improver escapes (2 calibs),
+improver moves (2 aimed destroys), polish depth/pacing, seed slots,
+placement scoring (2 weights) — ALL flat or regressive-reverted. The v25
+incumbents on the eligible set are locally optimal against every
+single-axis perturbation family known to this codebase.
