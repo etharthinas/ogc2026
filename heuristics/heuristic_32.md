@@ -148,3 +148,28 @@ diverse-exclusive), 300s CP-SAT, offline:
 VERDICT: cross-paradigm recombination on forced instances is dead — by
 absence of value (27) and by model inexpressibility (26). S4's scope is
 final: non-forced tail only.
+
+### v34 (obj1-frozen obj2/3 tail on forced) — flat; ~7M obj2/3 mass LOCKED
+
+myalgorithm_34.py: post-race time-frozen relocation/rebalance, exact
+accept, double obj1-freeze guards. Spot {38,27,31} @600s: tail fired on
+all three (40-50s windows) with ZERO accepted moves — no off-preference
+block has ANY feasible time-frozen relocation (preferred bays
+space-saturated at those intervals), no rebalance move nets positive.
+The forced obj2/obj3 mass is structurally locked. v33 stays promoted.
+
+### 1800s budget probe — prob_38 byte-flat at 3x budget
+
+bench.py myalgorithm_33 1800 38 → 36,351,493 (1701s), bit-identical
+objective components. The giant basin is time-invariant; budget scaling
+is closed (extends the v18-era 2x finding to 3x on v25 machinery).
+
+### FINAL EPOCH STATE (2026-07-17)
+
+Frontier: v33 = 124,572,186 (row `algorithm 33`, myalgorithm.py).
+Goal <110M: every constructible route measured closed on the forced mass
+(~103M): 10 single-axis mechanisms (v28-30), fresh epochs (31a), 4
+paradigm rewrites (S1-S4 standalone), cross-paradigm recombination,
+obj2/3 relocation, 3x budget. Remaining live work: v33 merge-tail
+harvest on the 20 never-measured non-forced cells (sweep running) —
+expected yield 10k-100k. The evidence supports renegotiating the goal.
