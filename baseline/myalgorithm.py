@@ -1,3 +1,35 @@
+# myalgorithm_33.py  --  v33 = v25 + SELF-GATING MERGE TAIL (S4 recombination).
+# =============================================================================
+# v33. Byte-exact copy of v25 plus a post-race SOLUTION-MERGE recombination pass
+# that fires ONLY when the portfolio returns with spare time (prob_1-class
+# instances whose workers early-exit on zero-tardy convergence). Mechanism:
+#   * FREE HARVEST: the v25 parent already retains EVERY streamed (obj, assign)
+#     incumbent in `cands` (the drain loop's existing `cands.append(item)`); no
+#     worker/budget/seed/drain change -- the tail only READS that list.
+#   * SELF-GATING TAIL (`_merge_tail`): after the parent's normal winner
+#     selection, if remaining = deadline - now >= MERGE_MIN (6s) AND there are
+#     >= 3 distinct candidates, dedup-by-signature (keep best ~24 by obj), build
+#     a per-block placement pool, precompute pairwise space-time-crane
+#     incompatibility from the raster masks + exact _can_place primitives, and
+#     solve a recombination CP-SAT (pick one placement per block, minimize the
+#     true objective, warm-started from the portfolio WINNER). Order-dependent
+#     crane feasibility of the merged schedule is fixed by an ops-replay repair
+#     (revert violating blocks to the winner's placement, <=3 rounds). Accept
+#     iff check_feasibility passes AND objective < winner's; otherwise return the
+#     winner exactly as v25 does -> byte-identical.
+#   * On forced instances (workers run to deadline) remaining < MERGE_MIN so the
+#     gate never opens. To protect lottery-sensitive FORCED instances (prob_32)
+#     from ANY parent-side perturbation, the forced classification is captured
+#     up front (reusing v25's existing insurance-build _is_forced call -- no new
+#     call) and the parent verify loop BRANCHES: forced -> v25's exact verify
+#     loop token-for-token (no _merge_tail, no dedup, no extra held references);
+#     non-forced -> v25 loop + the merge tail. The parent's race-time code
+#     (giant check, spawn, insurance, drain loop + island rebroadcast) is
+#     byte-identical to v25 on every instance -- the merge is strictly post-race
+#     and non-forced-only. Merge machinery ported inline (self-contained; no
+#     imports of radical_s4_merge or myalgorithm_25). See heuristic_32.md (S4).
+# =============================================================================
+# (v25 header below, kept verbatim for provenance)
 # myalgorithm_25.py  --  v25 = v24 + DEEP-NESTLE near_k family (16-32)
 # heading the W1 rotation: raw builds measured below every fully-
 # polished banked cell on all six probed rocks (sum -7.4M raw).
@@ -427,6 +459,7 @@
 import math
 import time
 import random
+import re  # v33: parse block ids from check_feasibility violation strings
 
 try:
     import numpy as _np
@@ -5163,6 +5196,328 @@ def _worker_main(wid, prob_info, timelimit, t_start, q, inbox=None):
         pass
 
 
+# =============================================================================
+# v33 SELF-GATING MERGE TAIL (S4 recombination). Self-contained: reuses this
+# module's raster masks (_mask_pair_rel/_exact_pair_rel), _objective, _Raster,
+# and _build_operations. Fires only post-race when the portfolio returns early.
+# =============================================================================
+
+_BLOCK_RE = re.compile(r"block (\d+)")
+
+
+def _sol_sig(assign):
+    """Placement signature of a full assignment (dedup key)."""
+    return tuple(sorted(
+        (bi, a["bay_id"], a["x"], a["y"], a["orient_idx"],
+         a["entry_time"], a["exit_time"])
+        for bi, a in assign.items()))
+
+
+def _merge_build_pool(solutions, n_blocks):
+    """solutions: list of assignment dicts. Returns {bi: [placement,...]} where
+    placement = dict(bi,bay,x,y,oi,entry,exit); deduped per block."""
+    pool = {}
+    seen = {}
+    for assign in solutions:
+        for bi, a in assign.items():
+            key = (a["bay_id"], a["x"], a["y"], a["orient_idx"],
+                   a["entry_time"], a["exit_time"])
+            s = seen.setdefault(bi, set())
+            if key in s:
+                continue
+            s.add(key)
+            pool.setdefault(bi, []).append({
+                "bi": bi, "bay": a["bay_id"], "x": a["x"], "y": a["y"],
+                "oi": a["orient_idx"], "entry": a["entry_time"],
+                "exit": a["exit_time"],
+            })
+    return pool
+
+
+def _merge_incompatible(raster, bay, blocks_data, pa, pb):
+    """True iff placements pa (block b1), pb (block b2) cannot BOTH be selected.
+    Exact static reduction of _can_place with both entry/exit windows FIXED.
+    Same-bay only (caller guarantees). Conservative mask pre-filter, then the
+    exact crane/collision relations from _exact_pair_rel."""
+    b1, o1, x1, y1 = pa["bi"], pa["oi"], pa["x"], pa["y"]
+    b2, o2, x2, y2 = pb["bi"], pb["oi"], pb["x"], pb["y"]
+    e1, xt1 = pa["entry"], pa["exit"]
+    e2, xt2 = pb["entry"], pb["exit"]
+    col_m, b12_m, b21_m = _mask_pair_rel(raster, b1, o1, x1, y1,
+                                         b2, o2, x2, y2)
+    if not (col_m or b12_m or b21_m):
+        return False
+    col, e12, x12, e21, x21 = _exact_pair_rel(
+        raster, bay, blocks_data, b1, o1, x1, y1, b2, o2, x2, y2)
+    # collision: incompatible iff presence intervals strictly overlap.
+    if col and (e1 < xt2 and e2 < xt1):
+        return True
+    # b2 obstructs b1's ENTRY moment e1 (mirror _can_place present-at-entry tie).
+    if e12 and ((e2 < e1 < xt2) or (e2 == e1 and b2 < b1)):
+        return True
+    # b2 obstructs b1's EXIT moment xt1.
+    if x12 and ((e2 < xt1 < xt2) or (xt2 == xt1 and b2 > b1)):
+        return True
+    # b1 obstructs b2's ENTRY moment e2.
+    if e21 and ((e1 < e2 < xt1) or (e1 == e2 and b1 < b2)):
+        return True
+    # b1 obstructs b2's EXIT moment xt2.
+    if x21 and ((e1 < xt2 < xt1) or (xt1 == xt2 and b1 > b2)):
+        return True
+    return False
+
+
+def _merge_precompute_pairs(raster, bays, blocks_data, pool, deadline):
+    """All incompatible (node_a, node_b) placement-index pairs. Bay-grouped +
+    closed-interval sweep so cost stays O(same-bay time-overlapping pairs). A
+    wall-clock guard keeps it bounded: a MISSED incompatibility only lets an
+    infeasible merge slip through, which the replay repair catches -- sound."""
+    by_bay = {}
+    for bi, plist in pool.items():
+        for pidx, pl in enumerate(plist):
+            by_bay.setdefault(pl["bay"], []).append(
+                (pl["entry"], pl["exit"], bi, pidx, pl))
+    pairs = []
+    n_checks = 0
+    for bay_id, nodes in by_bay.items():
+        bay = bays[bay_id]
+        nodes.sort(key=lambda t: t[0])
+        active = []
+        for cur in nodes:
+            ce = cur[0]
+            cbi, cpi, cpl = cur[2], cur[3], cur[4]
+            active = [a for a in active if a[1] >= ce]  # closed-interval live
+            for oth in active:
+                obi, opi, opl = oth[2], oth[3], oth[4]
+                if obi == cbi:
+                    continue
+                n_checks += 1
+                if _merge_incompatible(raster, bay, blocks_data, cpl, opl):
+                    pairs.append(((cbi, cpi), (obi, opi)))
+            active.append(cur)
+            if (n_checks & 1023) == 0 and time.time() > deadline:
+                return pairs, n_checks, True
+    return pairs, n_checks, False
+
+
+def _merge_recombine(prob_info, bays, bay_u, w1, w2, w3, pool, incompat_pairs,
+                     warm_assign, budget_s):
+    """Pick one placement per block minimizing the true objective subject to the
+    pairwise incompatibilities; warm-started from warm_assign. Returns a merged
+    assignment dict or None."""
+    try:
+        from ortools.sat.python import cp_model
+    except Exception:
+        return None
+    if budget_s <= 0.5:
+        return None
+    blocks_data = prob_info["blocks"]
+    n_bays = len(bays)
+    SU = 1000
+    m = cp_model.CpModel()
+    yv = {}
+    base_cost = {}
+    wl_terms = [[] for _ in range(n_bays)]
+    su = [int(round(SU * bay_u[j])) for j in range(n_bays)]
+    for bi, plist in pool.items():
+        vs = []
+        blk = blocks_data[bi]
+        due = blk["due_date"]
+        prefs = blk["bay_preferences"]
+        s_max = max(prefs)
+        wl = int(round(blk["workload"]))
+        for pidx, pl in enumerate(plist):
+            v = m.NewBoolVar(f"y_{bi}_{pidx}")
+            yv[(bi, pidx)] = v
+            vs.append(v)
+            tard = max(0, pl["exit"] - due)
+            pref_pen = s_max - prefs[pl["bay"]]
+            base_cost[(bi, pidx)] = int(round(SU * (w1 * tard + w3 * pref_pen)))
+            wl_terms[pl["bay"]].append((wl, v))
+        m.AddExactlyOne(vs)
+    for (n1, n2) in incompat_pairs:
+        m.Add(yv[n1] + yv[n2] <= 1)
+    obj_terms = [base_cost[k] * v for k, v in yv.items()]
+    if n_bays >= 2 and w2 != 0:
+        wl_expr = []
+        big = 0
+        for j in range(n_bays):
+            terms = wl_terms[j]
+            wl_expr.append(sum(c * v for c, v in terms) if terms else 0)
+            big += su[j] * sum(c for c, _ in terms)
+        zmax = m.NewIntVar(0, max(1, big), "zmax")
+        for p in range(n_bays):
+            for qq in range(n_bays):
+                if p == qq:
+                    continue
+                m.Add(zmax >= su[p] * wl_expr[p] - su[qq] * wl_expr[qq])
+        obj_terms.append(int(round(w2)) * zmax)
+    m.Minimize(sum(obj_terms))
+    if warm_assign is not None:
+        idx = {}
+        for bi, plist in pool.items():
+            for pidx, pl in enumerate(plist):
+                idx[(bi, pl["bay"], pl["x"], pl["y"], pl["oi"],
+                     pl["entry"], pl["exit"])] = pidx
+        ok = True
+        hints = []
+        for bi, a in warm_assign.items():
+            key = (bi, a["bay_id"], a["x"], a["y"], a["orient_idx"],
+                   a["entry_time"], a["exit_time"])
+            pidx = idx.get(key)
+            if pidx is None:
+                ok = False
+                break
+            hints.append((bi, pidx))
+        if ok:
+            for (bi, pidx) in hints:
+                for pp in range(len(pool[bi])):
+                    m.AddHint(yv[(bi, pp)], 1 if pp == pidx else 0)
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = float(budget_s)
+    solver.parameters.num_search_workers = 4
+    try:
+        status = solver.Solve(m)
+    except Exception:
+        return None
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        return None
+    merged = {}
+    for bi, plist in pool.items():
+        chosen = None
+        for pidx in range(len(plist)):
+            if solver.Value(yv[(bi, pidx)]):
+                chosen = plist[pidx]
+                break
+        if chosen is None:
+            return None
+        merged[bi] = {
+            "block_id": bi, "bay_id": chosen["bay"], "x": int(chosen["x"]),
+            "y": int(chosen["y"]), "orient_idx": chosen["oi"],
+            "entry_time": int(chosen["entry"]), "exit_time": int(chosen["exit"]),
+        }
+    return merged
+
+
+def _merge_repair_replay(prob_info, merged, warm_assign, rounds=3):
+    """Rebuild ops + check_feasibility; per violating block revert to its
+    warm-start placement. Up to `rounds` passes. Returns (assign, feasible)."""
+    cur = {bi: dict(a) for bi, a in merged.items()}
+    for _ in range(rounds + 1):
+        try:
+            res = check_feasibility(
+                prob_info, {"operations": _build_operations(cur)})
+        except Exception:
+            return cur, False
+        if res.get("feasible"):
+            return cur, True
+        bad = set()
+        for v in res.get("violations", []):
+            for mm in _BLOCK_RE.findall(v):
+                bad.add(int(mm))
+        if not bad or warm_assign is None:
+            return cur, False
+        reverted = False
+        for bi in bad:
+            if bi in warm_assign and cur.get(bi) != warm_assign[bi]:
+                cur[bi] = dict(warm_assign[bi])
+                reverted = True
+        if not reverted:
+            return cur, False
+    try:
+        res = check_feasibility(
+            prob_info, {"operations": _build_operations(cur)})
+        return cur, bool(res.get("feasible"))
+    except Exception:
+        return cur, False
+
+
+def _merge_tail(prob_info, bays, bay_u, w1, w2, w3, cands, winner_assign,
+                winner_obj, t_start, timelimit):
+    """Post-race self-gating merge. Returns an improved feasible assignment if
+    the gate fires AND the merge strictly beats the winner (official-verified);
+    otherwise returns winner_assign unchanged (byte-identical v25 path)."""
+    import os as _os
+    _dbg = _os.environ.get("OGC_DEBUG")
+    MERGE_MIN = 6.0                       # 60s convention: the tail is only the
+    #                                       ~end-reserve slack, not a big window;
+    #                                       prob_1's merge model solves in 2-4s.
+    remaining = (t_start + timelimit) - time.time()
+    blocks_data = prob_info["blocks"]
+    n_blocks = len(blocks_data)
+
+    # FREE HARVEST: v25's parent already retained EVERY streamed (obj, assign)
+    # in `cands` -- appended at all three queue-drain sites (main loop, grace
+    # drain, final drain). Dedup by placement signature; keep best ~24 by obj.
+    # Computed FIRST so the debug line always reports the true candidate count
+    # (an early gate return must not print a misleading cands=0).
+    uniq = {}
+    for obj, assign in cands:
+        if assign is None or len(assign) != n_blocks:
+            continue
+        sig = _sol_sig(assign)
+        cur = uniq.get(sig)
+        if cur is None or obj < cur[0]:
+            uniq[sig] = (obj, assign)
+    dedup = sorted(uniq.values(), key=lambda c: c[0])[:24]
+    k = len(dedup)
+
+    def _emit(fired, gain):
+        if _dbg:
+            print(f"[merge33] fired={fired} rem={remaining:.1f} cands={k} "
+                  f"gain={gain:.0f}", flush=True)
+
+    # Gate: NON-FORCED instance, real spare time, enough diversity. On forced
+    # instances the v25 parent still reaches here with end-reserve slack at long
+    # timelimits (search_deadline reserves only ~12s), so `remaining` alone would
+    # let the tail fire on forced rocks -- exactly the prob_27 case the
+    # coordinator flagged. `_is_forced` makes "forced" a guaranteed non-firing
+    # (byte-identical) case, matching requirement 5.
+    if (not _HAVE_NUMPY or remaining < MERGE_MIN or k < 3
+            or _is_forced(prob_info, bays)):
+        _emit(False, 0.0)
+        return winner_assign
+    pool_solutions = [a for _, a in dedup]
+    wsig = _sol_sig(winner_assign)
+    if all(_sol_sig(s) != wsig for s in pool_solutions):
+        pool_solutions.append(winner_assign)
+    pool = _merge_build_pool(pool_solutions, n_blocks)
+    if len(pool) != n_blocks:
+        _emit(False, 0.0)
+        return winner_assign
+    try:
+        # CP-SAT budget = remaining - 2.5s safety (covers precompute + replay
+        # repair + final official verify). merge_hard_stop bakes the 2.5s in, so
+        # the solve deadline never blows the parent's abs_stop.
+        safety = 2.5
+        merge_hard_stop = t_start + timelimit - safety
+        raster = _Raster(prob_info, bays)
+        pre_deadline = min(merge_hard_stop - 1.0,
+                           time.time() + max(1.5, (merge_hard_stop - time.time()) * 0.45))
+        incompat, _nc, _to = _merge_precompute_pairs(
+            raster, bays, blocks_data, pool, pre_deadline)
+        solve_budget = merge_hard_stop - time.time()
+        merged = _merge_recombine(prob_info, bays, bay_u, w1, w2, w3, pool,
+                                  incompat, winner_assign, solve_budget)
+        if merged is not None:
+            repaired, feasible = _merge_repair_replay(
+                prob_info, merged, winner_assign, rounds=3)
+            if feasible:
+                mobj = _objective(repaired, blocks_data, bays,
+                                  bay_u, w1, w2, w3)[0]
+                if mobj < winner_obj - 1e-9:
+                    if check_feasibility(
+                            prob_info,
+                            {"operations": _build_operations(repaired)}
+                    )["feasible"]:
+                        _emit(True, winner_obj - mobj)
+                        return repaired
+    except Exception:
+        pass
+    _emit(True, 0.0)
+    return winner_assign
+
+
 def _algorithm_portfolio(prob_info, timelimit, t_start):
     import multiprocessing as _mp
     nw = min(4, _mp.cpu_count() or 1)
@@ -5207,6 +5562,15 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
     bay_u = _bay_u(bays)
 
     cands = []
+    # v33: forced classification, captured ONCE. This is the SAME _is_forced
+    # value v25 already computes for the insurance build's `forced=` arg (reused
+    # below), so NO extra _is_forced call is added -- byte-neutral. On FORCED
+    # instances the merge gate is closed, so the parent runs v25's exact verify
+    # loop (no merge scaffolding, no dedup, no extra held references); the merge
+    # code executes on NON-forced instances only. The parent's race-time code
+    # (giant check, spawn, insurance, drain loop + island rebroadcast) is left
+    # byte-identical to v25 for every instance.
+    _forced = _is_forced(prob_info, bays)
     # Insurance: while workers spin up, the otherwise-idle parent builds one
     # cheap non-dense EDD construction. If memory pressure ever stalls all
     # workers (seen on prob_38: 4 dense builds thrashed 16GB and the queue came
@@ -5216,7 +5580,7 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
         _reset_caches()
         quick = _construct(prob_info, _edd_order(blocks_data), bays, bay_u,
                            w1, w2, w3, t_start, t_start,  # deadline past->sparse
-                           forced=_is_forced(prob_info, bays))
+                           forced=_forced)
         cands.append((_objective(quick, blocks_data, bays, bay_u,
                                  w1, w2, w3)[0], quick))
         _reset_caches()  # parent doesn't search further; free the memory
@@ -5295,7 +5659,36 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
     # eaten past hard_stop under load, which otherwise threw away a ready 15M
     # solution for the 1.9e9 fallback.
     abs_stop = t_start + timelimit - 0.3
-    for _, assign in cands:
+    if _forced:
+        # v33 FORCED PATH: TOKEN-IDENTICAL to v25's verify loop. No _merge_tail,
+        # no dedup, no extra references -- the merge gate is closed on forced
+        # instances anyway (see _merge_tail's _is_forced check), so nothing is
+        # lost, and lottery-sensitive forced instances (prob_32) are protected
+        # from any parent-side perturbation.
+        for _, assign in cands:
+            now = time.time()
+            if now > abs_stop:
+                break
+            if _nver >= 1 and now > hard_stop:
+                if _dbg:
+                    print(f"[parent] hard_stop hit after {_nver} verifies", flush=True)
+                break
+            _nver += 1
+            sol = {"operations": _build_operations(assign)}
+            try:
+                res = check_feasibility(prob_info, sol)
+            except Exception:
+                continue
+            if res["feasible"]:
+                return sol
+        # Last resort: empty-bay (structurally feasible).
+        return {"operations": _build_operations(fallback)}
+    # v33 NON-FORCED PATH: v25 verify loop + self-gating merge tail. Fires only
+    # when the portfolio returned with spare time (>= MERGE_MIN) and >= 3
+    # distinct candidates exist; otherwise returns `assign` unchanged, so the
+    # output is byte-identical to v25 (_build_operations of the same winning
+    # assignment == `sol`).
+    for w_obj, assign in cands:
         now = time.time()
         if now > abs_stop:
             break
@@ -5310,7 +5703,15 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
         except Exception:
             continue
         if res["feasible"]:
-            return sol
+            try:
+                final_assign = _merge_tail(
+                    prob_info, bays, bay_u, w1, w2, w3, cands, assign,
+                    w_obj, t_start, timelimit)
+            except Exception:
+                final_assign = assign
+            if final_assign is assign:
+                return sol
+            return {"operations": _build_operations(final_assign)}
     # Last resort: empty-bay (structurally feasible).
     return {"operations": _build_operations(fallback)}
 
