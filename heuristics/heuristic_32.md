@@ -81,4 +81,50 @@ Kill: CP-SAT finds nothing better than warm start on {26,27} within budget.
 
 ## Results
 
-(pending)
+### Smokes (agent-run, short budgets, prob_1 banked = 18,357)
+
+S4 merge 4,035 (43s) / S1 BRKGA 13,514 (30s) / S3 partition 41,465 (37s) /
+S2 backward 144,372 single-thread 30s (vs 166,743 M25-single reference).
+
+### S4 prob_1 @60s official bench (2026-07-16) — CONFIRMED NEW CELL LEVEL
+
+**prob_1 = 4,035** (35.9s, feasible, obj1=0.0 obj2=5 obj3=20) vs banked
+18,357 = **−14,322 (−78%)**. Harvest 9 distinct portfolio candidates,
+pool_avg 6.4 placements/block, 33,180 pairwise checks → 4,439 incompatible
+pairs, CP-SAT merged the union into a zero-tardiness mixture. First
+sub-banked cell of the campaign since v25. The portfolio has been
+discarding this recombination value on every instance for 25 versions.
+
+### S4 {26,27} @600s — merge gain ZERO on forced; harvest split costs
+
+prob_26 = 8,551,513 (warm = banked; merged_gain=0 from 14 candidates,
+pool_avg 8.1). prob_27 = **25,532,585 (+559,623)** — the 70% harvest
+produced a degraded champion (27's race sensitivity; near the fallback
+basin) and merge gained 0 on top. VERDICT: on saturated forced instances
+the harvested candidates share the same structural queue — their union
+spans no better mixture. S4's value concentrates on non-forced,
+low-tardiness instances. INTEGRATION SHAPE (strictly-safe): full v25
+portfolio unchanged (100% budget), harvest streamed candidates for free,
+merge ONLY in leftover tail budget on instances that converge early;
+skip on forced (measured gain 0). Estimated yield: −1M to −4M across the
+non-forced cells (1-20, 24/25/29/32/34/35/36/40 class).
+
+### S1/S2 standalone spots — both KILLED on forced
+
+S1 BRKGA @600s: 26 = 11.14M (+2.58M), 27 = 30.5M (+5.5M) — 95-120 decodes
+can't match the portfolio. Also prob_1 @60s = 34,511 (high variance, 6
+gens). S2 backward @600s: 26 = 44.3M, 27 = 198.2M — due-anchoring leaves
+massive tardiness on burst instances. LAW: no standalone single-process
+constructor competes with the 4-worker portfolio+polish; radical arms'
+value = post-race recombination (S4) and diversity feeding, not
+replacement.
+
+### v33 (v25 + self-gating merge tail) — BANKS on prob_1 @600s
+
+myalgorithm_33.py: v25 byte-identical + candidate retention (read-only on
+the existing stream) + post-race merge in the leftover tail (gate:
+not-forced, ≥3 candidates, ≥6s tail; CP-SAT warm-started, official-check
+accepted). prob_1 @600s (row conditions): **8,849 vs banked 18,357 =
+−9,508 (−52%)**, merge fired with 41.3s tail, 10 candidates. @60s the
+tail is only ~8s and the merge finds nothing (gain 0, harmless). Mid-tier
+spot {21,28,32,34,40} (13.2M mass) running.
