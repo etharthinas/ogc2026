@@ -70,3 +70,11 @@ if __name__ == "__main__":
     else:
         indices = list(range(1, 41))
     run(mod_name, timelimit, indices)
+    # Orphaned portfolio workers keep the interpreter alive after all output
+    # is written (multiprocessing termination is unreliable here); hard-exit
+    # so batch chains never hang between steps.
+    try:
+        sys.stdout.flush()
+    except Exception:
+        pass
+    os._exit(0)
