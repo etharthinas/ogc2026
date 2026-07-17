@@ -266,3 +266,33 @@ Clean re-probe of {39,27,31} nmc + {27,38,39} steal running.
 ### Night3 r3 A/B {31,33} — both bit-identical ties (pre-bug-discovery)
 31: 8,400,210 ×2, 33: 7,690,573 ×2 — consistent with the ticket premise
 being fake; 33 protect re-confirms the corrected row value a third time.
+
+### CLEAN re-probe (02:05–02:20, cache bug fixed) — final verdicts
+
+nm_compete (relative to same-config control / absolute vs family best):
+| prob | best rel Δ (nk3) | cmp best abs | family best abs | verdict |
+|---|---|---|---|---|
+| 38 | −2,674,658 | 41,700,612 | **41,063,457** (nk32-off) | family still wins |
+| 39 | −1,247,139 | 10,481,935 | ~10,301,276 | family still wins |
+| 31 | −1,650,781 | 9,575,466 | ~10,301,276* | close, but raw ≫ bank 8.40M |
+| 27 | −99,009 | — | — | locked as always |
+
+steal: 38 −912,757 rel (abs 45.7M vs family 41.1M), 39 −2,197,484 rel
+(abs 12.5M vs family 10.3M), 27 flat — all abs-uncompetitive.
+
+**FAMILY VERDICT — nm_compete and steal are CONFIG-RESCUE levers, not
+frontier advances.** They lift weak configs by 1–2.7M raw but their best
+absolute builds never beat the tuned deep-nestle family's best. That is
+exactly why every full-pipeline A/B tied bit-identically: the winning
+worker's stream was never improved. Both families are DEAD at portfolio
+level (jv6b keeps the two harmless clean-premise deliveries as sandbox).
+nk32+cmp grid explosion reproduces cleanly (borderline on 39: k1.0 ok,
+k0.5 explodes) — the merged-grid cost is structural, do not revisit.
+
+### Campaign state after night 1
+jv6 = 124,478,185 @750s stands. Live yield sources measured this campaign:
+Phase A bug-repair (−799,909), merge-tail × Phase D re-harvest (−383,875),
+750s draw shifts (net ≈ +46k after corrections... 37 −107k bimodal vs 33/27
+artifacts corrected). Everything else (steal, cmp, cap, tall, mid-tier
+tickets, W2/W1 appends): dead or delivery-blocked. This mirrors jay's
+v26–v34 closed-epoch conclusion on the forced mass.
