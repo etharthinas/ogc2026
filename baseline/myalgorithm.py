@@ -1,3 +1,35 @@
+# myalgorithm_36.py  --  v36 = v35 + BUDGET-CAPPED PORTFOLIO + OVERFLOW-TO-TAIL.
+# =============================================================================
+# v36. Byte-exact copy of v35 that decouples the SEARCH budget from the CONTEST
+# budget. The naive v35 @900s row showed BIDIRECTIONAL re-pacing variance: the
+# post-race tails deepen with more time (prob_1 +4,056; prob_6 -25,078), but the
+# 900s-PACED portfolio re-rolls every construction/lottery basin, giving big
+# losses (prob_12 +62,531; prob_5 +5,752; prob_10 +4,074). Fix by construction:
+#   * port_limit = min(timelimit, 600.0). EVERYTHING that paces the portfolio --
+#     worker windows (spawned with port_limit, not timelimit), the drain
+#     search_deadline, the reserve, the grace drain -- uses port_limit. So at
+#     timelimit=900 the portfolio phase is code- and pacing-identical to a 600s
+#     run: it explores the SAME basins as the banked 600s row (modulo machine
+#     timing), eliminating the re-pacing lottery.
+#   * The ~300s of overflow is handed ENTIRELY to the post-race TAILS. Both tails
+#     (non-forced _merge_tail, forced _tail35_cpsat) pace off the TRUE deadline
+#     t_start + timelimit, so every instance gets ~300s of tail on top of the
+#     capped portfolio's output. The return-safety cutoffs (hard_stop, abs_stop)
+#     also use the TRUE deadline -- with 300 spare seconds there is no reason to
+#     rush the official verification.
+#   * BYTE-IDENTITY GUARD: at timelimit <= 600, port_limit == timelimit and the
+#     `_overflow = timelimit > port_limit` flag is False, so every routed site
+#     takes the identical value it had in v35 and both tail-side relaxations stay
+#     at their v35 caps -> behavior is byte-identical to v35 for timelimit <= 600.
+#   * TAIL-SIDE LOOSENING (overflow only, never portfolio-side): the merge's
+#     dedup candidate cap 24 -> 64 and the forced tail's MOV_CAP 60 -> 120 /
+#     CAND_CAP 10 -> 20, exploiting the larger tail. The merge solve budget and
+#     precompute deadline already scale off the true remaining; nothing else was
+#     found to truncate artificially. All never-worse guards (champion is
+#     candidate 0; official check_feasibility gate; obj1-freeze assert; merge
+#     strict-improvement gate) are unchanged.
+# =============================================================================
+# (v35 header below, kept verbatim for provenance)
 # myalgorithm_35.py  --  v35 = v33 + FORCED OBJ2/OBJ3 JOINT-CPSAT FROZEN TAIL.
 # =============================================================================
 # v35. Byte-exact copy of v33 plus a post-race, obj1-FROZEN JOINT CP-SAT tail on
@@ -5481,7 +5513,7 @@ def _merge_repair_replay(prob_info, merged, warm_assign, rounds=3):
 
 
 def _merge_tail(prob_info, bays, bay_u, w1, w2, w3, cands, winner_assign,
-                winner_obj, t_start, timelimit):
+                winner_obj, t_start, timelimit, overflow=False):
     """Post-race self-gating merge. Returns an improved feasible assignment if
     the gate fires AND the merge strictly beats the winner (official-verified);
     otherwise returns winner_assign unchanged (byte-identical v25 path)."""
@@ -5507,7 +5539,10 @@ def _merge_tail(prob_info, bays, bay_u, w1, w2, w3, cands, winner_assign,
         cur = uniq.get(sig)
         if cur is None or obj < cur[0]:
             uniq[sig] = (obj, assign)
-    dedup = sorted(uniq.values(), key=lambda c: c[0])[:24]
+    # v36: overflow (timelimit>600) hands the merge ~300s of solve, so retain a
+    # richer pool. At timelimit<=600 overflow is False -> [:24], byte-identical.
+    _merge_cap = 64 if overflow else 24
+    dedup = sorted(uniq.values(), key=lambda c: c[0])[:_merge_cap]
     k = len(dedup)
 
     def _emit(fired, gain):
@@ -5566,7 +5601,8 @@ def _merge_tail(prob_info, bays, bay_u, w1, w2, w3, cands, winner_assign,
     return winner_assign
 
 
-def _tail35_cpsat(prob_info, champ_assign, bays, bay_u, w1, w2, w3, deadline):
+def _tail35_cpsat(prob_info, champ_assign, bays, bay_u, w1, w2, w3, deadline,
+                  overflow=False):
     """v35 FORCED obj2/obj3-only tail: SHRUNK in-tail JOINT CP-SAT over
     TIME-FROZEN position choices. v34's single greedy relocation found NO
     feasible move on space-saturated forced rocks (prob_31/38: 0 accepts), but
@@ -5617,9 +5653,11 @@ def _tail35_cpsat(prob_info, champ_assign, bays, bay_u, w1, w2, w3, deadline):
         loads[a["bay_id"]] += blocks_data[bi]["workload"]
     z2_bay = max(range(n_bays), key=lambda j: bay_u[j] * loads[j])
 
-    # -- MOVABLE: off-preference + Z2-max-bay, cap 60 by penalty desc --------
-    MOV_CAP = 60
-    CAND_CAP = 10
+    # -- MOVABLE: off-preference + Z2-max-bay, cap by penalty desc -----------
+    # v36: overflow (timelimit>600) gives this tail ~300s -> larger model. At
+    # timelimit<=600 overflow is False -> 60/10, byte-identical to v35.
+    MOV_CAP = 120 if overflow else 60
+    CAND_CAP = 20 if overflow else 10
     scored = []
     for bi, a in champ.items():
         prefs = blocks_data[bi]["bay_preferences"]
@@ -5793,6 +5831,16 @@ def _tail35_cpsat(prob_info, champ_assign, bays, bay_u, w1, w2, w3, deadline):
 
 
 def _algorithm_portfolio(prob_info, timelimit, t_start):
+    # v36 BUDGET CAP. The portfolio SEARCH is paced by port_limit = min(
+    # timelimit, 600): at timelimit > 600 it runs the SAME basins as a 600s run
+    # (killing the 900s re-pacing lottery), and the ~300s of overflow goes wholly
+    # to the post-race tails, which pace off the TRUE deadline (t_start +
+    # timelimit). `_overflow` is the byte-identity guard: at timelimit <= 600 it
+    # is False and port_limit == timelimit, so every routed site and both tail
+    # caps are identical to v35. The return-safety cutoffs (hard_stop, abs_stop)
+    # use the TRUE deadline -- 300 spare seconds, no reason to rush verification.
+    port_limit = min(timelimit, 600.0)
+    _overflow = timelimit > port_limit + 1e-9
     import multiprocessing as _mp
     nw = min(4, _mp.cpu_count() or 1)
     if nw < 2:
@@ -5815,16 +5863,16 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
     # ~4GB/4w, comfortable under 16GB.
     if len(prob_info["blocks"]) >= 250 and _is_forced(prob_info, _pre_bays):
         nw = min(nw, 4)
-    reserve = min(max(4.0, timelimit * 0.08), 12.0)
-    search_deadline = t_start + timelimit * 0.95 - reserve
+    reserve = min(max(4.0, port_limit * 0.08), 12.0)   # v36: port_limit-paced
+    search_deadline = t_start + port_limit * 0.95 - reserve
     ctx = _mp.get_context()
     q = ctx.Queue()
     inboxes = [ctx.Queue() for _ in range(nw)]  # v11 island broadcasts
     procs = []
     for wid in range(nw):
         p = ctx.Process(target=_worker_main,
-                        args=(wid, prob_info, timelimit, t_start, q,
-                              inboxes[wid]),
+                        args=(wid, prob_info, port_limit, t_start, q,
+                              inboxes[wid]),   # v36: workers pace off port_limit
                         daemon=True)
         p.start()
         procs.append(p)
@@ -5879,7 +5927,7 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
                 break
     # Grace drain: workers check their deadline once per improver round, and a
     # round can take seconds on n=250 -- wait briefly for the final puts.
-    grace = t_start + timelimit * 0.95 - reserve * 0.55
+    grace = t_start + port_limit * 0.95 - reserve * 0.55   # v36: port_limit-paced
     while time.time() < grace and any(p.is_alive() for p in procs):
         try:
             cands.append(q.get(timeout=0.25))
@@ -5903,7 +5951,7 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
     cands.append((_objective(fallback, blocks_data, bays, bay_u, w1, w2, w3)[0],
                   fallback))
     cands.sort(key=lambda c: c[0])
-    hard_stop = t_start + timelimit - 1.0
+    hard_stop = t_start + timelimit - 1.0   # v36: TRUE deadline (return safety)
     # v13 #3c: parent-side Z3 relocation on the winning candidate. Workers run
     # the pass inside polish, but a W0 (v9-replica) win never sees it -- this
     # catches that case. Cheap (~seconds, obj-gated); the relocated candidate
@@ -5932,7 +5980,7 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
     # the guard against the empty-bay catastrophe when the end-phase drain has
     # eaten past hard_stop under load, which otherwise threw away a ready 15M
     # solution for the 1.9e9 fallback.
-    abs_stop = t_start + timelimit - 0.3
+    abs_stop = t_start + timelimit - 0.3   # v36: TRUE deadline (return safety)
     if _forced:
         # v33 FORCED PATH: TOKEN-IDENTICAL to v25's verify loop. No _merge_tail,
         # no dedup, no extra references -- the merge gate is closed on forced
@@ -5968,7 +6016,8 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
                     try:
                         tail_dl = t_start + timelimit - 3.0   # 3s safety
                         t_assign, t_mv, t_cavg, t_swaps = _tail35_cpsat(
-                            prob_info, assign, bays, bay_u, w1, w2, w3, tail_dl)
+                            prob_info, assign, bays, bay_u, w1, w2, w3, tail_dl,
+                            overflow=_overflow)   # v36: bigger model on overflow
                         t_wdelta = 0.0
                         if t_assign is not None:
                             _to, _to1, t_o2, t_o3 = _objective(
@@ -6015,7 +6064,7 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
             try:
                 final_assign = _merge_tail(
                     prob_info, bays, bay_u, w1, w2, w3, cands, assign,
-                    w_obj, t_start, timelimit)
+                    w_obj, t_start, timelimit, _overflow)   # v36: overflow knob
             except Exception:
                 final_assign = assign
             if final_assign is assign:
