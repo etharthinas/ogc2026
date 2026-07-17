@@ -217,6 +217,25 @@ CSVROW jv6 (4w 750s; v33 x jv5 stack),8849,5840,61010,16916,70531,78558,77431,
 | 38 | 37,574,186 | **36,756,532** (702s) | 6th reproduction of the basin — tail value was a load artifact; corrected |
 | 37 | 5,807,047 | 5,807,047 | two 750s draws exist {5,699,640 ×2 (A/B), 5,807,047 ×2}; conservative kept |
 
-**Corrected full-40 @750s = 124,657,251** (recorded in results.csv). Net vs
-jv5 row: **−159,076** = −383,875 (merge-tail re-harvest) + 224,799 (forced
-draw shifts 33/27/14 at 750s). New SOTA row, this machine, 40/40 feasible.
+**Corrected full-40 @750s = 124,478,185** (results.csv; second correction:
+the night2 A/B re-measured 33 @750s isolated = 7,690,573 in BOTH arms → the
+full-40's 7,869,639 was another tail artifact, −179,066). Net vs jv5 row:
+**−338,142**. New SOTA row, this machine, 40/40 feasible.
+⚠️ Protocol law: full-40 TAIL values for timing-sensitive forced cells are
+unreliable on this machine — 38 (+817,654) and 33 (+179,066) both corrected by
+isolated re-bench. Future rows: always isolated-re-bench the forced cells.
+
+### Night2 (2026-07-17 23:18 – 07-18 01:15)
+
+**probe_tall — DEAD.** Hard tall-orientation forcing on 26-class:
+26 +3.83M/+13.2M (frac .75/.9), 23 +1.66M/+3.19M, 30 +1.79M/+3.13M.
+Orientation freedom is essential; with 30a/b (soft steering) this CLOSES the
+26 height-frag family entirely — the fragmentation is real but no orientation
+policy exploits it. Do not re-propose.
+
+**Mid-tier A/B (r2, APPENDED nk32j ticket, {31,33,26,23,30}) — 5/5 bit-
+identical ties.** The appended ticket NEVER RAN: W2's existing 7 tickets
+already exhaust the 0.45w cap on mid-tier. **Law: W2-append is structurally
+dead on nm_elig cells** (same budget-exhaustion as W1-append, 30a lesson).
+→ r3: ticket moved to HEAD, gate narrowed to exactly {31} (overload≤0.72),
+A/B {31}+protect{33} running.

@@ -5095,18 +5095,18 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                 # Different configs than W1's rotation head for diversity.
                 plan = [(0.5, 1.0, None, "nmbeam"),
                         (1.0, 0.5, None, "nmbeam")] + plan
-            if nm_elig and len(blocks_data) < 250 and overload <= 1.05:
-                # jv6b r2: mid-tier deep-compete ticket, APPENDED (mid-tier
-                # W2 lotteries finish under the 0.45w cap, so an appended
-                # ticket actually runs and cannot displace existing draws).
-                # probe_nmc 2026-07-17: the plain nk32/k1.0/a0.0 nm8+beam
-                # JITTERED build on prob_31 = 7,772,243 raw = -628k BELOW the
-                # 600s banked full pipeline. Same rng as the probe (9099) --
-                # unjittered production builds did not reproduce probe draws
-                # in round 1. Gate = {23,26,30,31,33}: excludes giants (W2
-                # cap truncation + the 38 coupling) and locked 27 (n=150 but
-                # overload 1.19 > 1.05).
-                plan = plan + [(0.0, 1.0, None, "nk32j")]
+            if nm_elig and len(blocks_data) < 250 and overload <= 0.72:
+                # jv6b r3: deep-compete ticket HEADING the rotation, gated to
+                # exactly {31} (overload<=0.72: 31=0.684; 23=0.784, 30=0.771,
+                # 26=0.87, 33=0.939 all out). r2 APPENDED it on 5 cells and
+                # got 5 bit-identical ties -- the existing 7 tickets already
+                # exhaust the 0.45w cap, so W2-APPEND IS STRUCTURALLY DEAD on
+                # nm_elig mid-tier (same budget-exhaustion as W1-append on
+                # 26-class). Head position displaces by one slot; risk
+                # confined to {31} by the gate. probe_nmc: this build
+                # (nk32/k1.0/a0.0/nm8/beam, JITTERED rng 9099) = 7,772,243
+                # raw on 31 = -628k BELOW the 600s banked full pipeline.
+                plan = [(0.0, 1.0, None, "nk32j")] + plan
             if steal37:
                 # jv6b: ONE reservation-steal ticket HEADING the rotation
                 # (probe_steal 2026-07-17: margin 2 SIGNAL -170,703 raw on 37,
