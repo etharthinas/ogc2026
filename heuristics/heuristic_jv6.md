@@ -124,3 +124,67 @@ with OGC_DEBUG before the A/B.
 **GATE: PASS** (Σ −799,909, 0 regressions, lex 1W/1T). Note: 27 @750s gives
 24,972,962 in BOTH arms vs the 600s-era 24,932,963 draw (+39,999) — the
 extra 150s shifts the race draw slightly; fair across arms, noise-scale.
+
+### Probe results (raw dispatch ablations, 2026-07-17 14:13–)
+
+**probe_steal** (steal m∈{2,4} vs off, min-over-lottery lens):
+| prob | best Δ within-cfg | new-raw-min vs off-min | note |
+|---|---|---|---|
+| 37 | **−170,703** (m2, k0.5) | −83,568 | design target fires; m2 > m4 |
+| 27 | −93,418 (m4, k1.0) | −93,418 | mostly harmful (+0.8..1.5M others) |
+| 38 | −2,004,353 (m4, k1.0) | −492,227 | k0.5 harmful; chaotic margins |
+| 39 | −332,403 (m4, k0.5) | −71,498 | chaotic |
+→ steal = lottery-diversity-like; clean signal only on 37. Deployed: W2 head
+ticket steal2/k0.5 gated {37}.
+
+**probe_nmc** (nm_compete on/off × nk{3,32}):
+| prob | nk3 Δ | nk32 Δ | verdict |
+|---|---|---|---|
+| 38 | **−2,674,658** / −2,345,442 | +555M/+1118M (grid explodes, unfinished) | nk3 only |
+| 39 | −578,814 / −544,847 | **−910,389** and k1.0: **−2,493,941 → raw 8,067,980 = −321k BELOW banked** | nk32 the star |
+| 27 | +1.1M..+2.3M | explodes | cmp DEAD on 27 (as everything) |
+| 31 | −143,985 (partial) | (pending) | mild |
+→ cmp ≫ steal on giants; v25's deep-nestle did NOT subsume 20b-2. Deployed:
+W0-reclaim 4th build @0.46w, gated n≥250 (excludes 27), overload>1.05 → nk3-cmp
+(38-class), else nk32-cmp k1.0 (39-class).
+
+**probe_nmc final** — prob_31: nk3-cmp k1.0 −1,372,611; nk32-cmp explodes; and
+the **plain nk32/k1.0/a0.0 off-build = 7,772,243 = −628k BELOW banked
+8,400,210** (a family config the production rotation apparently never runs —
+W2 mid-tier ticket candidate, needs spot A/B on {23,26,30,31,33}).
+
+**probe_cap**: 38 −1,459,277 within-config (k1.0,nk3) but 43.65M > the nk32
+family min 41.06M → cap widening is SUBSUMED by the deep-nestle family; drop.
+
+### jv6b deployed diff (vs jv6) — all gates verified byte-inert elsewhere
+1. W2 forced lottery HEAD ticket steal2/k0.5, gate `steal37` = {37}.
+2. W0-reclaim 4th build @0.46w (cmp), gate nm_elig ∧ reclaim ∧ n≥250 = {38,39}:
+   overload>1.05 → beam/nm8/nk3/cmp k0.5a0.5; else beam/nm8/nk32/cmp k1.0a0.0.
+3. `steal`/`nm_compete` kwargs default-off; 27 and all other 37 cells byte-exact.
+
+### jv6b A/B @750s {38,39,37} — ALL TIES (2026-07-17 15:49–17:05)
+
+| prob | jv6 | jv6b | note |
+|---|---|---|---|
+| 38 | 36,756,532 | 36,756,532 | bit-identical |
+| 39 | 8,406,071 | 8,406,071 | bit-identical (@750s draw = banked+16,552) |
+| 37 | **5,699,640** | 5,699,640 | bit-identical; **both arms −107,407 vs 600s banked — pure 750s time gain** |
+
+Smoke: jv6b prob_1@60s = 1,499 byte-exact (all levers inert off-gate). PASS.
+
+**Post-mortem**: the W0 4th build gets only the 0.38w→0.46w residual (~60s) —
+a giant beam+nm8 build needs ~100–150s (probe budget) → truncated → force-
+placed garbage → loses min-wins → tie. Also production builds are UNJITTERED
+(drng=None) while probes jitter with seed 9099 — probe draws don't transfer
+verbatim. The W2 steal ticket on 37 either never won its intra-worker race or
+its stream lost the portfolio race (bit-identical output = the winning worker
+was untouched in both arms). **Raw signal real, delivery slots lost — 30a's
+fate.** Next insertion attempt must give the cmp build a FULL slice with the
+probe's rng: 39-only ladder-head restructure (0.20w slice, jittered, existing
+builds shifted +0.08w — v24 pacing risk confined to {39} by gate), and W0-
+trace (OGC_DEBUG) to see whether the steal/cmp builds fire and what they
+produce in situ.
+
+### full-40 jv6 @750s — RUNNING (launched 17:07, ETA ~01:45)
+Both-arms 750s draw shifts observed on forced cells: 37 −107,407, 39 +16,552,
+27 +39,999 vs 600s bank → net full-40 time effect unknown until the row lands.

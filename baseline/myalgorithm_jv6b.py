@@ -4918,6 +4918,37 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                             _o0, a0 = _o2, a2
                     except Exception:
                         pass
+                    # jv6b: NM_COMPETE build (probe_nmc 2026-07-17). Near-miss
+                    # anchors competing in the MAIN contact-ranked pass. Gates
+                    # are mechanistic, from the probe:
+                    #   * n>=250 -- cmp is HARMFUL on prob_27 (n=150, +1.1M
+                    #     best case; 27 rejects every mechanism ever tried);
+                    #   * overload>1.05 (38-class): nk=3 -- nk32+cmp explodes
+                    #     the merged grid there (unfinished 600M+ builds);
+                    #     nk3-cmp raw -2,674,658 / -2,345,442 vs controls;
+                    #   * else (39-class): nk=32+cmp k1.0/a0.0 = 8,067,980 raw
+                    #     = NEW family min, -1.69M below off-min and -321k
+                    #     BELOW the 600s banked full-pipeline value.
+                    # cmp dominates steal on the giants (steal stays only as
+                    # 37's W2 head ticket). Builds 1-3 keep their exact dls
+                    # (v24 pacing law); this delays the deep pipeline only by
+                    # its own runtime -- the jv5 Phase A trade shape that won.
+                    if len(blocks_data) >= 250:
+                        try:
+                            if overload > 1.05:
+                                _o3, a3 = dispatch(
+                                    0.5, 0.5, alpha=0.5, beam=True,
+                                    nearmiss=8, nm_compete=True,
+                                    dl=t_start + 0.46 * window)
+                            else:
+                                _o3, a3 = dispatch(
+                                    1.0, 0.5, alpha=0.0, beam=True,
+                                    nearmiss=8, nk=32, nm_compete=True,
+                                    dl=t_start + 0.46 * window)
+                            if _o3 < _o0:
+                                _o0, a0 = _o3, a3
+                        except Exception:
+                            pass
                 else:
                     _o0, a0 = dispatch(2.0, 0.5, alpha=0.5)
             except Exception:
@@ -5065,12 +5096,15 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                 plan = [(0.5, 1.0, None, "nmbeam"),
                         (1.0, 0.5, None, "nmbeam")] + plan
             if steal37:
-                # jv6b: reservation-steal tickets APPENDED (displacement-safe:
-                # they run only if the existing lottery finishes under cap;
-                # min-wins on cands protects the bank). MARGIN sweep {2, 4}
-                # per the 31b design; base config, no nearmiss (one variable).
-                plan = plan + [(0.0, 1.0, None, "steal2"),
-                               (0.0, 1.0, None, "steal4")]
+                # jv6b: ONE reservation-steal ticket HEADING the rotation
+                # (probe_steal 2026-07-17: margin 2 SIGNAL -170,703 raw on 37,
+                # margin 4 weaker; k=0.5 cfg was the winner). Heading, not
+                # appending: at n=250 the 5 base tickets (~75s each) exhaust
+                # the 0.45w cap, so an appended ticket never runs (30a lesson:
+                # the near_k family also won by heading). Risk = displacing
+                # the last base ticket past cap on 37 ONLY (gate = {37});
+                # the 37 spot A/B measures exactly this trade.
+                plan = [(0.5, 0.5, None, "steal2")] + plan
             for al, ka, ts_, bm in plan:
                 try:
                     # beam tickets are capped at the lottery boundary so a slow
@@ -5078,9 +5112,9 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                     if bm == "nmbeam":
                         cands.append(dispatch(ka, 0.5, alpha=al, beam=True,
                                               dl=cap, nearmiss=8))
-                    elif bm in ("steal2", "steal4"):
+                    elif bm == "steal2":
                         cands.append(dispatch(ka, 0.5, alpha=al, dl=cap,
-                                              steal=int(bm[-1])))
+                                              steal=2))
                     else:
                         cands.append(dispatch(ka, 0.5, alpha=al, tspec=ts_,
                                               beam=bm, dl=cap if bm else None))
