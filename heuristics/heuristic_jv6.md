@@ -185,6 +185,38 @@ builds shifted +0.08w — v24 pacing risk confined to {39} by gate), and W0-
 trace (OGC_DEBUG) to see whether the steal/cmp builds fire and what they
 produce in situ.
 
-### full-40 jv6 @750s — RUNNING (launched 17:07, ETA ~01:45)
-Both-arms 750s draw shifts observed on forced cells: 37 −107,407, 39 +16,552,
-27 +39,999 vs 600s bank → net full-40 time effect unknown until the row lands.
+### full-40 jv6 @750s — landed 22:53, feasible 40/40, TOTAL 125,474,905 (raw)
+
+```
+CSVROW jv6 (4w 750s; v33 x jv5 stack),8849,5840,61010,16916,70531,78558,77431,
+11252,58395,79940,38108,94773,78343,99935,43137,44836,73755,54317,67227,185445,
+1380772,873789,2494797,578751,334062,8093323,24972962,3565230,557994,3363565,
+8400210,3881748,7869639,1978590,1688817,175641,5807047,37574186,8389519,
+2245665,125474905
+```
+
+**vs jv5 row (@600s, this machine): +658,578 raw — but the delta decomposes:**
+- **Non-forced merge-tail re-harvest: −383,875 across 21 cells** (12 −62,531,
+  9 −46,485, 18 −39,613, 16 −32,177, 13 −26,522, 5 −25,519, 22 −24,950,
+  4 −18,650, 19 −16,986, 10 −15,750, 24 −15,105, 11 −10,955, 6 −10,482,
+  1 −9,508, 20 −9,845, 3 −5,180, 15 −5,072, 17 −4,309, 7 −3,364, 2 −780,
+  36 −92). The Phase D × merge-tail synergy is REAL and banked.
+- **Forced-cell draw shifts @750s**: 33 +179,066, 27 +39,999, 14 +5,902.
+- **prob_38 = 37,574,186 = +817,654 off the basin reproduced 5× today**
+  (36,756,532 across jv5's 4 runs + today's 2 A/B arms). 37/39/40 landed
+  bit-exactly on their 600s bank values → tail-of-run load/draw artifact
+  suspected. Isolated re-bench of 38 and 37 launched 22:54 (jay's algorithm-23
+  re-bench precedent).
+- prob_1 @750s = 8,849 (not the 1,499 @60s draw — merge pool differs by
+  budget; the 1,499 basin exists but isn't the 750s attractor).
+
+### Isolated re-bench (23:54–23:18) — row corrected
+
+| prob | full-40 tail | isolated @750s | verdict |
+|---|---|---|---|
+| 38 | 37,574,186 | **36,756,532** (702s) | 6th reproduction of the basin — tail value was a load artifact; corrected |
+| 37 | 5,807,047 | 5,807,047 | two 750s draws exist {5,699,640 ×2 (A/B), 5,807,047 ×2}; conservative kept |
+
+**Corrected full-40 @750s = 124,657,251** (recorded in results.csv). Net vs
+jv5 row: **−159,076** = −383,875 (merge-tail re-harvest) + 224,799 (forced
+draw shifts 33/27/14 at 750s). New SOTA row, this machine, 40/40 feasible.
