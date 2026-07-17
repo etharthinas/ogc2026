@@ -164,6 +164,18 @@ bench.py myalgorithm_33 1800 38 → 36,351,493 (1701s), bit-identical
 objective components. The giant basin is time-invariant; budget scaling
 is closed (extends the v18-era 2x finding to 3x on v25 machinery).
 
+### Joint time-frozen relocation ceiling (exp_joint_frozen.py, 2026-07-17)
+
+The one sound CP-SAT shape on forced instances (times frozen → co-resident
+sets fixed → pairwise position-compat EXACT, escaping the merge model's
+inexpressibility). Offline, 300s solves, champion-anchored (cannot
+regress): **prob_31 = 9 swaps, dObj2 −30 / dObj3 −17 = −4,629 (0.06%)**,
+official-verified; **prob_38 = ZERO swaps** (185 movable, 36.6 avg
+candidates, 896k pair constraints). The obj2/3 lock holds at every move
+granularity: single (v34), joint (this). Class ceiling ~ −5k/instance
+best-case; in-tail integration (v35, shrunk model) worth maybe −10k
+total — the last positive mechanism.
+
 ### FINAL EPOCH STATE (2026-07-17)
 
 Frontier after full harvest: **v33 = 124,336,687** (row `algorithm 33
