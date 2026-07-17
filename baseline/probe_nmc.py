@@ -37,6 +37,13 @@ def one_dispatch(prob, bays, bay_u, w1, w2, w3, raster, kap, gam, al,
 
 
 def probe(k):
+    # CRITICAL (2026-07-18): module caches (_BLK/_CC/_CE/_CX/_MREL) are
+    # keyed by block_id, NOT instance -- multi-instance probe processes
+    # cross-contaminate geometry without this reset. Every cross-instance
+    # probe number produced before this fix is GARBAGE (only each
+    # process's FIRST instance was clean).
+    M._reset_caches()
+    M._MREL.clear()
     prob = json.load(open(os.path.join(TRAIN, f"prob_{k}.json")))
     bays = [M.Bay.from_dict(d, i) for i, d in enumerate(prob["bays"])]
     bay_u = M._bay_u(bays)

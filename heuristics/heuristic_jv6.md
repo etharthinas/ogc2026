@@ -239,3 +239,30 @@ already exhaust the 0.45w cap on mid-tier. **Law: W2-append is structurally
 dead on nm_elig cells** (same budget-exhaustion as W1-append, 30a lesson).
 → r3: ticket moved to HEAD, gate narrowed to exactly {31} (overload≤0.72),
 A/B {31}+protect{33} running.
+
+### ★ PROBE CACHE-CONTAMINATION BUG (found 2026-07-18 02:30) ★
+
+Night3 r3 A/B tied bit-identically on 31 → offline reproduction of the
+"7,772,243" build in a clean process gave **11,380,559** → root cause: the
+module caches `_BLK/_CC/_CE/_CX/_MREL` are keyed by `(block_id, oi, x, y)` —
+**instance-agnostic**. Production resets them per instance (`:2853`); the
+probe scripts did NOT, and ran multiple instances per process. **Every
+cross-instance probe number from 07-17 is garbage** (placements chosen with
+another instance's geometry, evaluated without a feasibility check):
+- probe_steal: only 37 (first) clean → **−170,703 stands**; 27/38/39 garbage.
+- probe_nmc: only 38 (first) clean → **nk3-cmp −2,674,658 stands**; the
+  39 "8,067,980 below banked" and 31 "7,772,243 below banked" miracles = FAKE.
+- probe_cap: only 38 clean (−1,459,277, but above family min → still drop).
+- probe_tall: only 26 clean (+3.83M → still DEAD).
+- **Retroactively explains jv4-era w3nm**: probe_w3nm ran 31 first (control,
+  clean, reproduced jay) then {32,34,37,22,29} contaminated → the "−562k on
+  32" that "polished away" in the real A/B was never real. The probe-vs-A/B
+  discrepancy pattern of that whole campaign is now explained.
+All four probe scripts patched (`_reset_caches()` + `_MREL.clear()` per
+instance). jv6b r4: nk32j ticket and the W0 39-branch (garbage premises)
+REMOVED; 38's nk3-cmp W0 build (clean premise, tied-harmless) kept.
+Clean re-probe of {39,27,31} nmc + {27,38,39} steal running.
+
+### Night3 r3 A/B {31,33} — both bit-identical ties (pre-bug-discovery)
+31: 8,400,210 ×2, 33: 7,690,573 ×2 — consistent with the ticket premise
+being fake; 33 protect re-confirms the corrected row value a third time.

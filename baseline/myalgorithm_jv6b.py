@@ -4918,33 +4918,21 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                             _o0, a0 = _o2, a2
                     except Exception:
                         pass
-                    # jv6b: NM_COMPETE build (probe_nmc 2026-07-17). Near-miss
-                    # anchors competing in the MAIN contact-ranked pass. Gates
-                    # are mechanistic, from the probe:
-                    #   * n>=250 -- cmp is HARMFUL on prob_27 (n=150, +1.1M
-                    #     best case; 27 rejects every mechanism ever tried);
-                    #   * overload>1.05 (38-class): nk=3 -- nk32+cmp explodes
-                    #     the merged grid there (unfinished 600M+ builds);
-                    #     nk3-cmp raw -2,674,658 / -2,345,442 vs controls;
-                    #   * else (39-class): nk=32+cmp k1.0/a0.0 = 8,067,980 raw
-                    #     = NEW family min, -1.69M below off-min and -321k
-                    #     BELOW the 600s banked full-pipeline value.
-                    # cmp dominates steal on the giants (steal stays only as
-                    # 37's W2 head ticket). Builds 1-3 keep their exact dls
-                    # (v24 pacing law); this delays the deep pipeline only by
-                    # its own runtime -- the jv5 Phase A trade shape that won.
-                    if len(blocks_data) >= 250:
+                    # jv6b: NM_COMPETE build (probe_nmc 2026-07-17). The nk3-
+                    # cmp signal on prob_38 (-2,674,658 / -2,345,442 raw vs
+                    # controls) is CLEAN (38 was the probe process's first
+                    # instance, before the cache-contamination window; see
+                    # r4 note above -- the 39-branch premise was garbage and
+                    # is removed). A/B @750s on 38: bit-identical tie (the
+                    # build runs in the truncated 0.38w->0.46w residual and/
+                    # or its stream loses the race) -- kept as harmless until
+                    # the clean re-probe decides a better slot.
+                    if len(blocks_data) >= 250 and overload > 1.05:
                         try:
-                            if overload > 1.05:
-                                _o3, a3 = dispatch(
-                                    0.5, 0.5, alpha=0.5, beam=True,
-                                    nearmiss=8, nm_compete=True,
-                                    dl=t_start + 0.46 * window)
-                            else:
-                                _o3, a3 = dispatch(
-                                    1.0, 0.5, alpha=0.0, beam=True,
-                                    nearmiss=8, nk=32, nm_compete=True,
-                                    dl=t_start + 0.46 * window)
+                            _o3, a3 = dispatch(
+                                0.5, 0.5, alpha=0.5, beam=True,
+                                nearmiss=8, nm_compete=True,
+                                dl=t_start + 0.46 * window)
                             if _o3 < _o0:
                                 _o0, a0 = _o3, a3
                         except Exception:
@@ -5095,18 +5083,15 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                 # Different configs than W1's rotation head for diversity.
                 plan = [(0.5, 1.0, None, "nmbeam"),
                         (1.0, 0.5, None, "nmbeam")] + plan
-            if nm_elig and len(blocks_data) < 250 and overload <= 0.72:
-                # jv6b r3: deep-compete ticket HEADING the rotation, gated to
-                # exactly {31} (overload<=0.72: 31=0.684; 23=0.784, 30=0.771,
-                # 26=0.87, 33=0.939 all out). r2 APPENDED it on 5 cells and
-                # got 5 bit-identical ties -- the existing 7 tickets already
-                # exhaust the 0.45w cap, so W2-APPEND IS STRUCTURALLY DEAD on
-                # nm_elig mid-tier (same budget-exhaustion as W1-append on
-                # 26-class). Head position displaces by one slot; risk
-                # confined to {31} by the gate. probe_nmc: this build
-                # (nk32/k1.0/a0.0/nm8/beam, JITTERED rng 9099) = 7,772,243
-                # raw on 31 = -628k BELOW the 600s banked full pipeline.
-                plan = [(0.0, 1.0, None, "nk32j")] + plan
+            # jv6b r4: the r2/r3 "nk32j" mid-tier ticket is REMOVED. Its
+            # premise (probe raw 7,772,243 on 31 = -628k below bank) was
+            # GARBAGE from the probe cache-contamination bug (module caches
+            # _BLK/_CC/_CE/_CX are block_id-keyed, not instance-scoped; the
+            # probe process ran 38->39->27->31 without _reset_caches()).
+            # Clean-context value of that build on 31 = 11,380,559 -- far
+            # above the bank. r2's measured law stands though: W2-append is
+            # structurally dead on nm_elig mid-tier (5/5 bit-identical ties;
+            # cap exhausted before appended tickets run).
             if steal37:
                 # jv6b: ONE reservation-steal ticket HEADING the rotation
                 # (probe_steal 2026-07-17: margin 2 SIGNAL -170,703 raw on 37,

@@ -70,6 +70,13 @@ def one_dispatch(prob, kap, gam, al, budget=90.0):
 
 
 def probe(k):
+    # CRITICAL (2026-07-18): module caches (_BLK/_CC/_CE/_CX/_MREL) are
+    # keyed by block_id, NOT instance -- multi-instance probe processes
+    # cross-contaminate geometry without this reset. Every cross-instance
+    # probe number produced before this fix is GARBAGE (only each
+    # process's FIRST instance was clean).
+    M._reset_caches()
+    M._MREL.clear()
     prob = json.load(open(os.path.join(TRAIN, f"prob_{k}.json")))
     print(f"\nprob_{k}:", flush=True)
     best = None
