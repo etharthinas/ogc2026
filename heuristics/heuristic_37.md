@@ -168,4 +168,36 @@ since v25
 - v2 (sweep mode): overlapping bands, apply-and-continue passes,
   asymmetric slack-aware pools (tardy → earlier times down to release;
   slack-rich → free later times within slack; cross-bay menus; 39.5
-  cand/block vs 18.5 in v1). Measurement in flight.
+  cand/block vs 18.5 in v1). MEASURED: prob_27 sweep → single −13,333 then
+  converged; prob_38 W=30 sweep → the SAME single −13,333. Champion is
+  window-optimal at every entry-band granularity.
+
+### PRESENCE-WINDOW CERTIFICATES (2026-07-18) — champion-anchored repair
+class CLOSED at −13,333/giant
+
+Entry-band windows freeze the actual floor-holders (residents entering
+before t1). v3 presence mode frees every block whose [entry,exit)
+intersects the band, WITH slack-shifted time menus and cross-bay
+candidates for residents too:
+- prob_38 [38,48]: 110 blocks free, 3,248 candidates, 467k pair-combos,
+  built 28s, GATE0 PASS, solved OPTIMAL → delta +0.
+- prob_38 [48,58]: 105 blocks free → OPTIMAL, the same single −13,333
+  (verified, saved cpsat_order_38.json → 36,322,548).
+- prob_38 [0,135] (window cap 140 blocks): OPTIMAL, +0.
+- prob_27 [42,52]: 65 blocks free → OPTIMAL, single −13,333 (verified,
+  saved cpsat_order_27.json → 24,959,629); [20,32]: 75 blocks → +0.
+VERDICT: at every scope 20→140 blocks, exact joint (order × geometry ×
+bay × time) repack of the champion proves optimal-within-pool except for
+exactly ONE tardiness unit per giant. The slack-transfer chains the
+ordering bound permits (−630/−429 units) are NOT reachable from the
+champion's packing at any tractable neighborhood scope — the remaining
+headroom, if it exists, requires a globally different packing dialect
+(pools are champion-shaped; 8 anchors/bay×orient around realized
+geometry). Total harvest of the repair class: −26,666.
+
+Consequences: (1) 37b (construction-time defrag basin change) is the only
+live arm; (2) integration of the order-tail (−26,666 + generic in-tail
+presence repack of whatever champion emerges) proceeds as v37 regardless;
+(3) if 37b dies, the honest conclusion is that ~124.1M is the effective
+optimum of this architecture, now backed by exact certificates rather
+than exhausted-mechanism induction.
