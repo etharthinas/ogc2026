@@ -230,6 +230,38 @@ verdict now holds under a model that provably represents the champion.
 Fix in flight: v37s (string-embedded tail, workers lex one string token;
 compile time 34.6ms ≈ v36's 35.8ms) — 10-cell measurement chain running.
 
+### EPOCH RESOLUTION (2026-07-18): v37 PROMOTED — row 124,149,848; the
+reproducibility discovery reframes cross-version comparison
+
+Final v37 cells @900s (same-day, quiet serial): 38 = 36,322,548 (−28,945),
+27 = 24,959,629 (−13,333), 23 = 2,510,595 (−13,559), 33 = 7,727,671
+(−6,667), 37 = 5,770,494; 32/26/30/31/39 byte-equal to v36. Row total
+124,149,848 vs v36's 124,141,498 — the +8,350 recorded delta is an
+artifact of ONE stale cell: **v36's banked prob_37 = 5,699,640 is NOT
+reproducible (same-day v36 control = 5,807,047, +107,407); v37 beats the
+honest control by −36,553 there.** prob_32's roll IS reproducible
+(controls byte-equal) — session-state sensitivity is instance-specific.
+v37s (string-embedded tail, worker parse byte-equal to v36) landed the
+SAME basins as v37-AST → parse latency is NOT the basin mechanism at
+ms-scale deltas; session state dominates. v37 promoted to myalgorithm.py:
+structurally v37 = v36's race + a post-race official-check-gated min-wins
+tail — per-session it dominates v36; on the eval server it can only help
+or skip.
+
+Epoch verdict vs the <110M goal: NOT reachable by any mechanism this
+epoch could construct or certify. The three radical arms resolved as:
+37a stochastic joint LNS — dead (0 accepts in 2,768 iterations);
+37b death-time defrag construction — dead (±0.1%, no gradient);
+37c order-aware exact repack — sound, capped at ONE tardiness unit per
+giant, with 110-block joint optimality certificates on 38 and 65/75-block
+on 27; donor-dialect pools add zero under the sound model. The remaining
+−14.15M sits behind exact local-optimality certificates rather than
+exhausted-mechanism induction — the strongest closure evidence any epoch
+has produced. Untested legitimate lever for the CONTEST (not this bench
+convention): at timelimits ≥~1500s, a second differently-seeded capped
+race in the overflow budget would harvest session-lottery variance
+in-algorithm (min-wins safe by construction).
+
 Mid-tier presence sweeps (offline, on v25 captures, 600s): prob_37
 **−41,190** (3 accepts; w1=3333 → 12 obj1 units — low-w1 instances hold
 more reachable units), prob_33 **−6,667** (1 unit); 26/31/39 zero (locked).

@@ -5830,6 +5830,728 @@ def _tail35_cpsat(prob_info, champ_assign, bays, bay_u, w1, w2, w3, deadline,
     return new_assign, len(movable), cands_avg, swaps
 
 
+# =============================================================================
+# v37 POST-RACE TAIL: replay-order-aware presence-window CP-SAT repack.
+#
+# VENDORED (self-contained) from baseline/cpsat_order.py (arm 37c). cpsat_order
+# imports myalgorithm_36 as `M.`; here the identical helpers already live in
+# THIS module, so every `M.xxx` becomes a bare local call. All vendored
+# module-level names carry a `_t37_`/`_T37` prefix to guarantee zero collision
+# with existing symbols. NO import of cpsat_order, NO file reads -> the contest
+# bundle needs only myalgorithm_37.py + utils.py.
+#
+# Mechanism: from the champion (winner after all existing tails) compute
+# queue(t) = released-but-not-entered count per tick; take the top-2
+# non-overlapping width-10 bands by peak queue; per band build the
+# presence-window model (window cap 110, same pools/pruning as cpsat_order),
+# Gate0-check the champion, solve, realize ops crane-aware (topo) + no-good
+# repair (<=3), verify with the official check_feasibility, accept only on
+# STRICT official improvement (min-wins). Hard deadline discipline throughout:
+# every solve is capped by an absolute hard_deadline that leaves >=10s slack
+# for the final ops build; the stage never overruns t_start + timelimit.
+# =============================================================================
+# ortools must NOT be imported at module level: every spawned worker
+# re-imports this module, and the extra ~1s startup latency displaces the
+# cross-worker race lotteries (v37 spot runs measured prob_37 +70,854 /
+# prob_38 basin flip vs v36 cells with an eager import here). Lazy-load in
+# the parent-side tail only.
+_cp_model = None
+_T37_CP_TRIED = False
+
+
+def _t37_cp():
+    global _cp_model, _T37_CP_TRIED
+    if not _T37_CP_TRIED:
+        _T37_CP_TRIED = True
+        try:
+            from ortools.sat.python import cp_model as m
+            _cp_model = m
+        except Exception:                             # pragma: no cover
+            _cp_model = None
+    return _cp_model
+
+# ---- tunables (mirror cpsat_order presence mode) ----------------------------
+_T37_PRESENCE_CAND_CAP = 32     # candidates per block in presence mode
+_T37_PRESENCE_ANCHORS = 8       # raster anchors per (bay, orient)
+_T37_WIN_CAP = 110              # task: window cap 110 blocks
+_T37_MAX_EARLY = 9             # earlier-entry candidate times for tardy blocks
+_T37_MAX_LATE = 12             # later-entry candidate times within free slack
+_T37_SU = 1000                 # imbalance (u_j ratio) scale
+_T37_WSCALE = 1000             # weight scale (preserves small w2 precisely)
+_T37_BAND_W = 10               # band width (ticks)
+_T37_BUILD_CAP_S = 30.0        # per-band pairwise-build cap (models ~20s)
+
+
+def _t37_window_ids(base, t1, t2, presence, win_cap):
+    if presence:
+        ids = sorted(bi for bi, a in base.items()
+                     if a["entry_time"] <= t2 and a["exit_time"] >= t1)
+    else:
+        ids = sorted(bi for bi, a in base.items()
+                     if t1 <= a["entry_time"] <= t2)
+    if len(ids) > win_cap:
+        ids = ids[:win_cap]
+    return ids
+
+
+def _t37_champ_order(bi, bj):
+    """_build_operations same-tick tie-break: lower block_id first."""
+    return bi < bj
+
+
+def _t37_entry_choices(a, blk):
+    """Asymmetric time menu for a window block given its base assignment `a`."""
+    release = int(blk["release_time"])
+    due = int(blk["due_date"])
+    proc = a["exit_time"] - a["entry_time"]
+    base = a["entry_time"]
+    tard = max(0, a["exit_time"] - due)
+
+    early = []
+    if base > release:
+        span = base - release
+        if tard > 0:
+            if span <= _T37_MAX_EARLY:
+                early = list(range(release, base))
+            else:
+                early = [release + i for i in range(0, 6)]
+                early += [release + int(span * f) for f in (0.5, 0.7, 0.85)]
+                early = sorted({t for t in early if release <= t < base})
+        else:
+            early = [base - 1]
+    late = []
+    unused_slack = (due - proc) - base
+    if unused_slack > 0:
+        late = list(range(base + 1, base + unused_slack + 1))[:_T37_MAX_LATE]
+    return sorted({base, *early, *late}), base
+
+
+def _t37_build_pool(base_assign, blocks_data, bays, raster, window_ids,
+                    fixed_ids, cand_cap, per_bay_anchors):
+    """One combined-candidate pool per window block; each candidate is exact-
+    gated feasible vs the FROZEN schedule (block_id tie-break). base candidate
+    is index 0. Cross-bay allowed."""
+    n_bays = len(bays)
+    fixed_by_bay = [[] for _ in range(n_bays)]
+    for bi in fixed_ids:
+        a = base_assign[bi]
+        nb = _mkblock(bi, blocks_data[bi], a["x"], a["y"], a["orient_idx"])
+        fixed_by_bay[a["bay_id"]].append((nb, a["entry_time"], a["exit_time"]))
+
+    pool = {}
+    for bi in window_ids:
+        a = base_assign[bi]
+        blk = blocks_data[bi]
+        proc = a["exit_time"] - a["entry_time"]
+        prefs = blk["bay_preferences"]
+        s_max = max(prefs)
+        due = int(blk["due_date"])
+        orients = _unique_orients(blk)
+        choices, base_entry = _t37_entry_choices(a, blk)
+
+        seen = set()
+        cands = []
+
+        def _gate(bay_id, x, y, oi, entry):
+            if len(cands) >= cand_cap:
+                return
+            exit_t = entry + proc
+            key = (bay_id, x, y, oi, entry)
+            if key in seen:
+                return
+            bay = bays[bay_id]
+            nb = _mkblock(bi, blk, x, y, oi)
+            rel = [(fb, fe, fx) for (fb, fe, fx) in fixed_by_bay[bay_id]
+                   if _overlaps(entry, exit_t, fe, fx)
+                   or fe in (entry, exit_t) or fx in (entry, exit_t)]
+            if not _can_place(bay, rel, nb, entry, exit_t):
+                return
+            seen.add(key)
+            cands.append({"bi": bi, "bay": bay_id, "x": int(x), "y": int(y),
+                          "oi": oi, "entry": int(entry), "exit": int(exit_t),
+                          "proc": proc, "pen3": s_max - prefs[bay_id],
+                          "tard": max(0, exit_t - due)})
+
+        _gate(a["bay_id"], a["x"], a["y"], a["orient_idx"], base_entry)
+        for et in choices:
+            _gate(a["bay_id"], a["x"], a["y"], a["orient_idx"], et)
+
+        bay_order = sorted(range(n_bays), key=lambda j: -prefs[j])
+        time_priority = [base_entry] + [t for t in choices if t != base_entry]
+        for bay_id in bay_order:
+            if len(cands) >= cand_cap:
+                break
+            bay = bays[bay_id]
+            for oi in orients:
+                if not _orient_fits(blk, oi, bay):
+                    continue
+                actives = [(fb.block_id, fb.orient_idx, fb.x, fb.y)
+                           for (fb, fe, fx) in fixed_by_bay[bay_id]
+                           if _overlaps(base_entry, base_entry + proc, fe, fx)]
+                res = raster.scan_scoped(bay_id, actives, bi, oi)
+                feas, cx0, cy0, occ_fp = res
+                if feas is None or not feas.any():
+                    continue
+                cells = _order_cells(raster, feas, cx0, cy0, bi, oi,
+                                     raster.W[bay_id], occ_fp, True, None)
+                stride = max(1, len(cells) // (per_bay_anchors * 3))
+                anchors = cells[::stride][:per_bay_anchors]
+                for et in time_priority:
+                    for (x, y) in anchors:
+                        _gate(bay_id, x, y, oi, et)
+                        if len(cands) >= cand_cap:
+                            break
+                    if len(cands) >= cand_cap:
+                        break
+        pool[bi] = cands
+    return pool
+
+
+def _t37_pair_rel(raster, bays, blocks_data, ca, cb):
+    bay = bays[ca["bay"]]
+    return _exact_pair_rel(
+        raster, bay, blocks_data,
+        ca["bi"], ca["oi"], ca["x"], ca["y"],
+        cb["bi"], cb["oi"], cb["x"], cb["y"])
+
+
+class _T37Model:
+    def __init__(self, prob, base, window_ids, fixed_ids, pool, bays, bay_u,
+                 raster):
+        self.prob = prob
+        self.base = base
+        self.window_ids = window_ids
+        self.fixed_ids = fixed_ids
+        self.pool = pool
+        self.bays = bays
+        self.bay_u = bay_u
+        self.raster = raster
+        self.blocks_data = prob["blocks"]
+        w = prob.get("weights", {})
+        self.w1 = w.get("w1", 1.0)
+        self.w2 = w.get("w2", 1.0)
+        self.w3 = w.get("w3", 1.0)
+        self.m = _cp_model.CpModel()
+        self.z = {}
+        self.oe = {}
+        self.ox = {}
+        self.n_pair_combos = 0
+        self.n_hard = 0
+        self.n_ordcon = 0
+        self._records = []
+        self._nogoods = 0
+        self.pairs_capped = False
+        self.pairs_done = 0
+        self.pairs_total = 0
+
+    def _oe_var(self, bi, bj):
+        k = (bi, bj) if bi < bj else (bj, bi)
+        v = self.oe.get(k)
+        if v is None:
+            v = self.m.NewBoolVar(f"oe_{k[0]}_{k[1]}")
+            self.oe[k] = v
+        return k, v
+
+    def _ox_var(self, bi, bj):
+        k = (bi, bj) if bi < bj else (bj, bi)
+        v = self.ox.get(k)
+        if v is None:
+            v = self.m.NewBoolVar(f"ox_{k[0]}_{k[1]}")
+            self.ox[k] = v
+        return k, v
+
+    def build(self, build_deadline=None, t0=None):
+        m = self.m
+        t0 = t0 or time.time()
+        for bi in self.window_ids:
+            vs = [m.NewBoolVar(f"z_{bi}_{c}") for c in range(len(self.pool[bi]))]
+            for c, v in enumerate(vs):
+                self.z[(bi, c)] = v
+            m.AddExactlyOne(vs)
+
+        trng = {}
+        for bi in self.window_ids:
+            es = [c["entry"] for c in self.pool[bi]]
+            xs = [c["exit"] for c in self.pool[bi]]
+            trng[bi] = (min(es), max(es), min(xs), max(xs))
+
+        wl = list(self.window_ids)
+        self.pairs_total = len(wl) * (len(wl) - 1) // 2
+        done = 0
+        for ii in range(len(wl)):
+            bi = wl[ii]
+            min_ei, _me, _mxi, max_xi = trng[bi]
+            for jj in range(ii + 1, len(wl)):
+                bj = wl[jj]
+                done += 1
+                min_ej, _mej, _mxj, max_xj = trng[bj]
+                if min_ei > max_xj or min_ej > max_xi:
+                    continue
+                self._pair_constraints(bi, bj)
+            if build_deadline is not None and time.time() > build_deadline:
+                self.pairs_capped = True
+                self.pairs_done = done
+                break
+        self.pairs_done = done
+        self._objective()
+
+    def _pair_constraints(self, bi, bj):
+        ci, cj = self.pool[bi], self.pool[bj]
+        bd = self.blocks_data
+        for ai, ca in enumerate(ci):
+            ei, xi = ca["entry"], ca["exit"]
+            bay_a = ca["bay"]
+            for aj, cb in enumerate(cj):
+                if bay_a != cb["bay"]:
+                    continue
+                ej, xj = cb["entry"], cb["exit"]
+                if ei > xj or ej > xi:
+                    continue
+                col, e_ab, x_ab, e_ba, x_ba = _t37_pair_rel(
+                    self.raster, self.bays, bd, ca, cb)
+                if not (col or e_ab or x_ab or e_ba or x_ba):
+                    continue
+                self.n_pair_combos += 1
+                za, zb = self.z[(bi, ai)], self.z[(bj, aj)]
+
+                if col and (ei < xj and ej < xi):
+                    self.m.Add(za + zb <= 1)
+                    self.n_hard += 1
+                    self._records.append(("col", bi, bj, ai, aj))
+                    continue
+
+                if e_ab:
+                    if ej < ei < xj:
+                        self.m.Add(za + zb <= 1); self.n_hard += 1
+                        self._records.append(("e_ab_forced", bi, bj, ai, aj))
+                    elif ej == ei and xj > ei:
+                        self._require_entry_order(bi, bj, bi, za, zb)
+                        self._records.append(("e_ab_order", bi, bj, ai, aj))
+                if e_ba:
+                    if ei < ej < xi:
+                        self.m.Add(za + zb <= 1); self.n_hard += 1
+                        self._records.append(("e_ba_forced", bi, bj, ai, aj))
+                    elif ei == ej and xi > ej:
+                        self._require_entry_order(bi, bj, bj, za, zb)
+                        self._records.append(("e_ba_order", bi, bj, ai, aj))
+                if x_ab:
+                    if ej < xi < xj:
+                        self.m.Add(za + zb <= 1); self.n_hard += 1
+                        self._records.append(("x_ab_forced", bi, bj, ai, aj))
+                    elif xj == xi and ej < xi:
+                        self._require_exit_order(bi, bj, bj, za, zb)
+                        self._records.append(("x_ab_order", bi, bj, ai, aj))
+                if x_ba:
+                    if ei < xj < xi:
+                        self.m.Add(za + zb <= 1); self.n_hard += 1
+                        self._records.append(("x_ba_forced", bi, bj, ai, aj))
+                    elif xi == xj and ei < xj:
+                        self._require_exit_order(bi, bj, bi, za, zb)
+                        self._records.append(("x_ba_order", bi, bj, ai, aj))
+
+    def _require_entry_order(self, bi, bj, first, za, zb):
+        k, v = self._oe_var(bi, bj)
+        want = v if first == k[0] else v.Not()
+        self.m.AddBoolOr([za.Not(), zb.Not(), want])
+        self.n_ordcon += 1
+
+    def _require_exit_order(self, bi, bj, first, za, zb):
+        k, v = self._ox_var(bi, bj)
+        want = v if first == k[0] else v.Not()
+        self.m.AddBoolOr([za.Not(), zb.Not(), want])
+        self.n_ordcon += 1
+
+    def _objective(self):
+        m = self.m
+        n_bays = len(self.bays)
+        bd = self.blocks_data
+        cost_terms = []
+        wl_terms = [[] for _ in range(n_bays)]
+        for bi in self.window_ids:
+            wkl = int(round(bd[bi]["workload"]))
+            for cidx, c in enumerate(self.pool[bi]):
+                v = self.z[(bi, cidx)]
+                cst = int(round(_T37_WSCALE * (self.w1 * c["tard"]
+                                               + self.w3 * c["pen3"])))
+                if cst:
+                    cost_terms.append(cst * v)
+                wl_terms[c["bay"]].append((wkl, v))
+        base_load = [0.0] * n_bays
+        for bi in self.fixed_ids:
+            base_load[self.base[bi]["bay_id"]] += bd[bi]["workload"]
+
+        obj = [_T37_SU * t for t in cost_terms]
+        if n_bays >= 2 and self.w2 != 0:
+            su = [int(round(_T37_SU * self.bay_u[j])) for j in range(n_bays)]
+            load_expr, big = [], 0
+            for j in range(n_bays):
+                base = int(round(base_load[j]))
+                terms = [su[j] * base]; cap = su[j] * base
+                for (coef, var) in wl_terms[j]:
+                    terms.append(su[j] * coef * var); cap += su[j] * coef
+                load_expr.append(sum(terms)); big = max(big, cap)
+            zmax = m.NewIntVar(0, max(1, big), "zmax")
+            for p in range(n_bays):
+                for q in range(n_bays):
+                    if p != q:
+                        m.Add(zmax >= load_expr[p] - load_expr[q])
+            obj.append(int(round(_T37_WSCALE * self.w2)) * zmax)
+        m.Minimize(sum(obj))
+
+    def _champ_hints(self):
+        oevals = {k: (1 if _t37_champ_order(k[0], k[1]) else 0) for k in self.oe}
+        oxvals = {k: (1 if _t37_champ_order(k[0], k[1]) else 0) for k in self.ox}
+        return oevals, oxvals
+
+    def add_warm_start(self):
+        oevals, oxvals = self._champ_hints()
+        for bi in self.window_ids:
+            for cidx in range(len(self.pool[bi])):
+                self.m.AddHint(self.z[(bi, cidx)], 1 if cidx == 0 else 0)
+        for k, v in self.oe.items():
+            self.m.AddHint(v, oevals[k])
+        for k, v in self.ox.items():
+            self.m.AddHint(v, oxvals[k])
+
+
+def _t37_diagnose_champion(mdl):
+    zsel = {bi: 0 for bi in mdl.window_ids}
+    for (kind, bi, bj, ai, aj) in mdl._records:
+        if zsel[bi] != ai or zsel[bj] != aj:
+            continue
+        oij = _t37_champ_order(bi, bj)
+        if kind == "col":
+            return False
+        if kind.endswith("_forced"):
+            return False
+        if kind == "e_ab_order" and not oij:
+            return False
+        if kind == "e_ba_order" and oij:
+            return False
+        if kind == "x_ab_order" and oij:
+            return False
+        if kind == "x_ba_order" and not oij:
+            return False
+    return True
+
+
+def _t37_gate0(mdl, hard_deadline):
+    """Quiet Gate0: the champion window must be ACCEPTED as a feasible hint by
+    the new model. Cheap python diagnostic first, then a CP-SAT clone solve of
+    the fixed champion (capped by hard_deadline). Returns bool."""
+    if not _t37_diagnose_champion(mdl):
+        return False
+    left = hard_deadline - time.time()
+    if left < 2.0:
+        return False
+    m2 = mdl.m.Clone()
+    oevals, oxvals = mdl._champ_hints()
+    for bi in mdl.window_ids:
+        for cidx in range(len(mdl.pool[bi])):
+            m2.Add(mdl.z[(bi, cidx)] == (1 if cidx == 0 else 0))
+    for k, v in mdl.oe.items():
+        m2.Add(v == oevals[k])
+    for k, v in mdl.ox.items():
+        m2.Add(v == oxvals[k])
+    solver = _cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = float(max(1.0, min(30.0, left)))
+    solver.parameters.num_search_workers = 4
+    st = solver.Solve(m2)
+    return st in (_cp_model.OPTIMAL, _cp_model.FEASIBLE)
+
+
+def _t37_topo(ids, edges):
+    """Kahn topo sort with block_id tie-break. Returns ordered list or None."""
+    adj = {u: set() for u in ids}
+    indeg = {u: 0 for u in ids}
+    for (u, v) in edges:
+        if v not in adj[u]:
+            adj[u].add(v); indeg[v] += 1
+    out = []
+    avail = sorted(u for u in ids if indeg[u] == 0)
+    while avail:
+        u = avail.pop(0)
+        out.append(u)
+        for w in sorted(adj[u]):
+            indeg[w] -= 1
+            if indeg[w] == 0:
+                avail.append(w); avail.sort()
+    return out if len(out) == len(ids) else None
+
+
+def _t37_build_ops_ordered(assign, blocks_data, bays):
+    """Emit operations with a crane-aware within-tick order (topo over exact
+    entry_blocked/exit_blocked relations, block_id tie-break). Cycle -> block_id
+    fallback (official checker is the final gate)."""
+    blk = {bid: _mkblock(bid, blocks_data[bid], a["x"], a["y"], a["orient_idx"])
+           for bid, a in assign.items()}
+    entries_bt, exits_bt = {}, {}
+    for a in assign.values():
+        entries_bt.setdefault((a["bay_id"], a["entry_time"]), []).append(
+            a["block_id"])
+        exits_bt.setdefault((a["bay_id"], a["exit_time"]), []).append(
+            a["block_id"])
+
+    def order_entries(bay_id, ids):
+        bay = bays[bay_id]
+        edges = set()
+        for i in range(len(ids)):
+            for j in range(i + 1, len(ids)):
+                u, v = ids[i], ids[j]
+                buv = _entry_blocked(bay, blk[v], blk[u])
+                bvu = _entry_blocked(bay, blk[u], blk[v])
+                if buv:
+                    edges.add((u, v))
+                if bvu:
+                    edges.add((v, u))
+                if not buv and not bvu:
+                    edges.add((min(u, v), max(u, v)))
+        r = _t37_topo(ids, edges)
+        return r if r is not None else sorted(ids)
+
+    def order_exits(bay_id, ids):
+        bay = bays[bay_id]
+        edges = set()
+        for i in range(len(ids)):
+            for j in range(i + 1, len(ids)):
+                u, v = ids[i], ids[j]
+                buv = _exit_blocked(bay, blk[v], blk[u])
+                bvu = _exit_blocked(bay, blk[u], blk[v])
+                if buv:
+                    edges.add((v, u))
+                if bvu:
+                    edges.add((u, v))
+                if not buv and not bvu:
+                    edges.add((min(u, v), max(u, v)))
+        r = _t37_topo(ids, edges)
+        return r if r is not None else sorted(ids)
+
+    operations = {}
+    ticks = sorted({t for (_, t) in entries_bt} | {t for (_, t) in exits_bt})
+    n_bays = len(bays)
+    for t in ticks:
+        lst = []
+        for bay_id in range(n_bays):
+            ids = exits_bt.get((bay_id, t))
+            if ids:
+                for bid in order_exits(bay_id, ids):
+                    a = assign[bid]
+                    lst.append({"type": "EXIT", "block_id": bid,
+                                "bay_id": a["bay_id"]})
+        for bay_id in range(n_bays):
+            ids = entries_bt.get((bay_id, t))
+            if ids:
+                for bid in order_entries(bay_id, ids):
+                    a = assign[bid]
+                    lst.append({"type": "ENTRY", "block_id": bid,
+                                "bay_id": a["bay_id"], "x": a["x"], "y": a["y"],
+                                "orient_idx": a["orient_idx"]})
+        operations[str(t)] = lst
+    return operations
+
+
+def _t37_build_band(prob, base, bays, bay_u, raster, t1, t2, win_cap,
+                    build_deadline):
+    """Construct the presence-window pool + CP-SAT model. Returns
+    (mdl|None, pool, window_ids)."""
+    bd = prob["blocks"]
+    window_ids = _t37_window_ids(base, t1, t2, True, win_cap)
+    if len(window_ids) < 2:
+        return None, None, window_ids
+    win_set = set(window_ids)
+    fixed_ids = [bi for bi in base if bi not in win_set]
+    pool = _t37_build_pool(base, bd, bays, raster, window_ids, fixed_ids,
+                           cand_cap=_T37_PRESENCE_CAND_CAP,
+                           per_bay_anchors=_T37_PRESENCE_ANCHORS)
+    mdl = _T37Model(prob, base, window_ids, fixed_ids, pool, bays, bay_u, raster)
+    mdl.build(build_deadline=build_deadline)
+    return mdl, pool, window_ids
+
+
+def _t37_solve_model(prob, base, mdl, pool, window_ids, bays, bay_u, budget_s,
+                     hard_deadline):
+    """Solve, realize crane-aware, verify official; lazy no-good repair (<=3
+    rounds). Every solver.Solve is capped by hard_deadline. Returns
+    (new_assign|None, delta). new_assign strictly improves internal objective
+    AND passes the official check_feasibility, else None."""
+    bd = prob["blocks"]
+    w = prob.get("weights", {})
+    w1, w2, w3 = w.get("w1", 1.0), w.get("w2", 1.0), w.get("w3", 1.0)
+    win_set = set(window_ids)
+    base_obj = _objective(base, bd, bays, bay_u, w1, w2, w3)[0]
+
+    solver = _cp_model.CpSolver()
+    solver.parameters.num_search_workers = 8
+    solver.parameters.random_seed = 1
+
+    for rnd in range(3):
+        left = hard_deadline - time.time()
+        if left < 2.0:
+            return None, 0.0
+        solver.parameters.max_time_in_seconds = float(max(1.0,
+                                                          min(budget_s, left)))
+        st = solver.Solve(mdl.m)
+        if st not in (_cp_model.OPTIMAL, _cp_model.FEASIBLE):
+            return None, 0.0
+        new_assign = {bi: dict(a) for bi, a in base.items()}
+        sel = {}
+        for bi in window_ids:
+            chosen = None
+            for cidx, c in enumerate(pool[bi]):
+                if solver.Value(mdl.z[(bi, cidx)]) == 1:
+                    chosen = c; sel[bi] = cidx; break
+            if chosen is None:
+                chosen = pool[bi][0]; sel[bi] = 0
+            a = new_assign[bi]
+            a["bay_id"] = chosen["bay"]; a["x"] = chosen["x"]
+            a["y"] = chosen["y"]; a["orient_idx"] = chosen["oi"]
+            a["entry_time"] = chosen["entry"]; a["exit_time"] = chosen["exit"]
+
+        ops = _t37_build_ops_ordered(new_assign, bd, bays)
+        res = check_feasibility(prob, {"operations": ops})
+        if res["feasible"]:
+            delta = res["objective"] - base_obj
+            if delta < -0.5:
+                return new_assign, delta
+            return None, delta
+
+        bad = set()
+        for vtext in res.get("violations", []):
+            for mtc in re.findall(r"block (\d+)", vtext):
+                b = int(mtc)
+                if b in win_set:
+                    bad.add(b)
+        if not bad:
+            break
+        mdl.m.Add(sum(mdl.z[(b, sel[b])] for b in bad) <= len(bad) - 1)
+        mdl._nogoods += 1
+    return None, 0.0
+
+
+def _t37_pick_bands(base, blocks_data, w=_T37_BAND_W, k=2):
+    """queue(t) = count of released-but-not-entered blocks per tick. Return the
+    top-`k` non-overlapping width-`w` bands [t1,t2] by peak queue (peak > 0)."""
+    import bisect
+    ev = {}
+    for bi, a in base.items():
+        r = int(blocks_data[bi]["release_time"])
+        e = int(a["entry_time"])
+        if r < e:
+            ev[r] = ev.get(r, 0) + 1
+            ev[e] = ev.get(e, 0) - 1
+    if not ev:
+        return []
+    cum_ticks, cum_vals = [], []
+    run = 0
+    for t in sorted(ev):
+        run += ev[t]
+        cum_ticks.append(t); cum_vals.append(run)
+
+    def q_at(t):
+        i = bisect.bisect_right(cum_ticks, t) - 1
+        return cum_vals[i] if i >= 0 else 0
+
+    scored = []
+    for s in cum_ticks:                       # anchor bands at event ticks
+        peak = q_at(s)
+        lo_i = bisect.bisect_left(cum_ticks, s)
+        hi_i = bisect.bisect_left(cum_ticks, s + w)
+        for j in range(lo_i, hi_i):
+            if cum_vals[j] > peak:
+                peak = cum_vals[j]
+        scored.append((peak, s))
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    chosen = []
+    for peak, s in scored:
+        if peak <= 0:
+            continue
+        if all(abs(s - s2) >= w for (_, s2) in chosen):
+            chosen.append((peak, s))
+        if len(chosen) >= k:
+            break
+    return [(s, s + w) for (_, s) in chosen]
+
+
+def _tail37_order(prob_info, champ_assign, bays, bay_u, w1, w2, w3,
+                  t_start, timelimit, forced, res):
+    """v37 order-aware presence-window CP-SAT tail. Runs AFTER the existing
+    tails on the current champion. Returns an improved {"operations": ...} that
+    STRICTLY beats the champion's official objective (crane-aware ordering), or
+    None (caller keeps the champion). Hard deadline discipline: never overruns
+    t_start + timelimit and leaves >=10s slack for the final ops build.
+
+    Gate: remaining budget >= 120s AND (forced instance OR w1 >= 6000 with
+    tardy blocks present). Skips silently otherwise."""
+    if _t37_cp() is None or not _HAVE_NUMPY:
+        return None
+    n_bays = len(bays)
+    if n_bays < 2:
+        return None
+    deadline = t_start + timelimit
+    if deadline - time.time() < 120.0:
+        return None
+    blocks_data = prob_info["blocks"]
+    if not forced:
+        if w1 < 6000:
+            return None
+        if not any(a["exit_time"] > blocks_data[bi]["due_date"]
+                   for bi, a in champ_assign.items()):
+            return None
+
+    base_obj_off = res["objective"]        # champion official objective
+    working = {bi: dict(a) for bi, a in champ_assign.items()}
+    bands = _t37_pick_bands(working, blocks_data)
+    if not bands:
+        return None
+
+    raster = _Raster(prob_info, bays)
+    improved = False
+    for band_ix, (t1, t2) in enumerate(bands):
+        now = time.time()
+        remaining = deadline - now
+        # Deadline discipline: stop unless enough budget for a band + reserve.
+        # hard_deadline leaves a 20s reserve before the true deadline (>=10s of
+        # which is slack for the final ops build).
+        if remaining < 30.0:
+            break
+        hard_deadline = deadline - 20.0
+        bands_left = len(bands) - band_ix
+        share = max(5.0, (hard_deadline - now) / max(1, bands_left))
+        build_deadline = now + min(_T37_BUILD_CAP_S, share * 0.5)
+        try:
+            mdl, pool, window_ids = _t37_build_band(
+                prob_info, working, bays, bay_u, raster, t1, t2,
+                _T37_WIN_CAP, build_deadline)
+            if mdl is None:
+                continue
+            if not _t37_gate0(mdl, hard_deadline):
+                continue
+            mdl.add_warm_start()
+            solve_budget = max(3.0, hard_deadline - time.time())
+            na, delta = _t37_solve_model(
+                prob_info, working, mdl, pool, window_ids, bays, bay_u,
+                solve_budget, hard_deadline)
+            if na is not None and delta < -0.5:
+                working = na
+                improved = True
+        except Exception:
+            continue
+
+    if not improved:
+        return None
+    # Final official verification + strict-improvement accept (min-wins).
+    if deadline - time.time() < 10.0:
+        return None
+    try:
+        ops = _t37_build_ops_ordered(working, blocks_data, bays)
+        fres = check_feasibility(prob_info, {"operations": ops})
+    except Exception:
+        return None
+    if fres.get("feasible") and fres["objective"] < base_obj_off - 0.5:
+        return {"operations": ops}
+    return None
+
+
 def _algorithm_portfolio(prob_info, timelimit, t_start):
     # v36 BUDGET CAP. The portfolio SEARCH is paced by port_limit = min(
     # timelimit, 600): at timelimit > 600 it runs the SAME basins as a 600s run
@@ -6038,6 +6760,24 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
                                 return t_sol
                     except Exception:
                         pass
+                # v37 CALL SITE (single addition; existing tails above are
+                # token-identical to v36). Order-aware presence-window CP-SAT
+                # tail, run AFTER the existing tails on the race champion
+                # `assign` (the tail35 obj2/obj3 swap tail returns early on its
+                # rare wins; on the space-saturated forced giants it declines
+                # and falls through here -- exactly where the measured obj1
+                # wins on prob_38/27 land). Elapsed-guarded (>=120s remaining),
+                # official-checker gated, min-wins: returns an improved sol only
+                # on STRICT official improvement, else `sol` is returned
+                # unchanged (non-regression).
+                try:
+                    t37_sol = _tail37_order(
+                        prob_info, assign, bays, bay_u, w1, w2, w3,
+                        t_start, timelimit, _forced, res)
+                    if t37_sol is not None:
+                        return t37_sol
+                except Exception:
+                    pass
                 return sol
         # Last resort: empty-bay (structurally feasible).
         return {"operations": _build_operations(fallback)}
