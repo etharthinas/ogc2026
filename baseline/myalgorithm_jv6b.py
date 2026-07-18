@@ -3553,7 +3553,8 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
                         kappa=1.0, gamma=0.5, rng=None, cand_cap=12,
                         alpha=0.0, score_pos=False, eps=0.15, targets=None,
                         beam=False, beam_m=4, nearmiss=0, mpc=False,
-                        ovh=False, steal=0, nm_compete=False, zone=0):
+                        ovh=False, steal=0, nm_compete=False, zone=0,
+                        drain=0):
     """Event-driven admission construction using the raster full-position scan.
 
     Walk event times (releases + scheduled exits); at each event admit queued
@@ -3612,14 +3613,45 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
         s = w3 * (max(prefs) - prefs[bay_id]) + gamma * w1 * util
         return s
 
-    def try_place(bi, t, cap):
+    def _drain_score(bi, bay_id, x, y, oi, look):
+        """jv6b DRAIN LOOKAHEAD (untried joint order+geometry, 2026-07-18):
+        after tentatively placing bi at (bay_id,x,y,oi), how many of the
+        `look` most-urgent OTHER queued blocks still have ANY conservative-
+        feasible cell somewhere? Higher = this placement preserves more future
+        admission capacity = faster queue drain (the measured giant bottleneck,
+        ledger_27_diag: 100% of obj1 is entry-delay). Mask-feasibility proxy
+        (raster.scan.any()), exact _can_place unchanged at commit."""
+        raster.add(bay_id, bi, oi, x, y)
+        cnt = 0
+        for lb in look:
+            ok = False
+            lblk = blocks_data[lb]
+            for bj in range(n_bays):
+                for loi in orients_of[lb]:
+                    if not _orient_fits(lblk, loi, bays[bj]):
+                        continue
+                    fe, _c, _r = raster.scan(bj, lb, loi)
+                    if fe is not None and fe.any():
+                        ok = True
+                        break
+                if ok:
+                    break
+            if ok:
+                cnt += 1
+        raster.remove(bay_id, bi, oi, x, y)
+        return cnt
+
+    def try_place(bi, t, cap, look=None):
         """Try to admit block bi entering at time t. Returns placement tuple or
         None. `cap` = max exact _can_place gates per (bay,orient). With
         score_pos, feasible cells are ranked by perimeter contact (density
-        lever); otherwise pure bottom-left (== v12 when rng is None)."""
+        lever); otherwise pure bottom-left (== v12 when rng is None). With
+        `drain` and `look`, collect the first passing cell per (bay,oi) and
+        return the one that leaves the most `look` blocks placeable."""
         blk = blocks_data[bi]
         p = procs[bi]
         exit_t = t + p
+        dcands = [] if (drain and look) else None
         order = sorted(range(n_bays), key=lambda j: bay_score(bi, j, t))
         for bay_id in order:
             bay = bays[bay_id]
@@ -3685,10 +3717,20 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
                 for (x, y) in cells:
                     nb = _mkblock(bi, blk, x, y, oi)
                     if _can_place(bay, rel, nb, t, exit_t):
+                        if dcands is not None:
+                            dcands.append((bay_id, x, y, oi))
+                            break        # one best-contact cell per (bay,oi)
                         return (bay_id, x, y, oi, t, exit_t)
                     tried += 1
                     if tried >= budget:
                         break
+        if dcands:
+            # drain lookahead: pick the passing cell that preserves the most
+            # future admission capacity; ties keep the best-contact candidate.
+            best = max(range(len(dcands)),
+                       key=lambda i: (_drain_score(bi, *dcands[i], look), -i))
+            b_id, bx, by, boi = dcands[best]
+            return (b_id, bx, by, boi, t, exit_t)
         # v20 Improvement A: near-miss recovery. The conservative mask found
         # no clear anchor; try anchors it rejects by <= near_k dilated cells,
         # exact-gated by _can_place (a pass is officially feasible). Only in
@@ -4042,12 +4084,19 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
             beam_admit(t, ordered, cc)
         else:
             steals_left = 2 if steal else 0   # jv6b: bounded attempts/event
-            for bi in ordered:
+            for pos, bi in enumerate(ordered):
                 if time.time() > deadline:
                     break
                 if targets is not None and t < targets[bi]:
                     continue    # round-3 GATE: hold until the fluid target
-                place = try_place(bi, t, cc)
+                # jv6b drain lookahead: the next `drain` more-urgent queued
+                # blocks (after bi) whose release has passed -- the ones this
+                # placement must not foreclose.
+                look = None
+                if drain:
+                    look = [b for b in ordered[pos + 1:]
+                            if targets is None or t >= targets[b]][:drain]
+                place = try_place(bi, t, cc, look=look)
                 if place is None and steals_left:
                     place = try_steal(bi, t, cc)
                     steals_left = 0 if place is not None else steals_left - 1
