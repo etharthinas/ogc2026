@@ -5832,7 +5832,13 @@ def _merge_tail(prob_info, bays, bay_u, w1, w2, w3, cands, winner_assign,
         cur = uniq.get(sig)
         if cur is None or obj < cur[0]:
             uniq[sig] = (obj, assign)
-    dedup = sorted(uniq.values(), key=lambda c: c[0])[:24]
+    # jv6c: pool cap env-tunable (default 24 = v33). Widening -> richer
+    # per-block placement diversity for the recombination CP-SAT, at the cost
+    # of a larger model (more y-vars). Only the non-forced merge fires, so this
+    # is the one positive-yield family's tuning knob. min-wins + official
+    # verify keep it floor-safe.
+    _cap = int(_os.environ.get("OGC_MERGE_CAP", "24"))
+    dedup = sorted(uniq.values(), key=lambda c: c[0])[:_cap]
     k = len(dedup)
 
     def _emit(fired, gain):
