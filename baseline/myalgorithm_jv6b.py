@@ -5020,6 +5020,17 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                     # polish-survival test (raw is still above the beam family
                     # best, so this only banks if the drained layout lands the
                     # polish in a basin the standard seed can't reach).
+                    # r7 FIX: r6 selected a0 by min-wins on RAW obj -- but the
+                    # drain build's raw (~11.3M/39) is ABOVE the tuned nk32
+                    # build (~10.3M), so min-wins DISCARDED the drain seed and
+                    # r6 measured nothing. drain's value is STRUCTURE
+                    # (drainability), not lower raw. Force the drain seed as
+                    # the pipeline input for the giants (the nk24/nk32/mpc raw
+                    # builds already push() as portfolio floor, so this is
+                    # floor-safe); the A/B then compares the drain-SEEDED
+                    # polish vs jv6's nk32-seeded polish -- the real test of
+                    # whether a drainable structure survives improve->
+                    # whole_bay->z3 to a better basin.
                     try:
                         _o3, a3 = dispatch(
                             1.0, 0.5, alpha=0.0, beam=True,
@@ -5028,9 +5039,10 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                         import os as _oss
                         if _oss.environ.get("OGC_DEBUG"):
                             print(f"[drain] raw={_o3:,.0f} "
-                                  f"parent_min={_o0:,.0f}", flush=True)
-                        if _o3 < _o0:
-                            _o0, a0 = _o3, a3
+                                  f"parent_min={_o0:,.0f} (FORCED seed)",
+                                  flush=True)
+                        if a3 is not None and len(a3) == len(blocks_data):
+                            _o0, a0 = _o3, a3          # FORCE drain seed
                     except Exception:
                         pass
                 else:
