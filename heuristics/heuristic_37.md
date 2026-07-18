@@ -213,6 +213,15 @@ serial, quiet machine:
   36,351,493 → **−28,945** (race lands the 36,335,881 basin, tail −13,333).
 - prob_27 = 24,959,629 (600.7s, feasible, obj1 1725) — v36 cell
   24,972,962 → **−13,333**.
+Mid-tier presence sweeps (offline, on v25 captures, 600s): prob_37
+**−41,190** (3 accepts; w1=3333 → 12 obj1 units — low-w1 instances hold
+more reachable units), prob_33 **−6,667** (1 unit); 26/31/39 zero (locked).
+37b DTC construction KILLED: single-worker ladder on 38 — stock 44,012,585
+vs best DTC (cohort w8) 43,971,741 (−0.09%), adj w8 +3.3M, cohort w2
++1.4M; effect size ±0.1% with sign flips, no gradient, dwarfed by the
+7.7M single-worker-vs-portfolio gap; never justifies perturbing the
+frozen race coupling.
+
 Total verified so far: **−42,278**; projected v37 row ≈ 124,099,220
 (< v36 124,141,498; other cells byte-identical by construction — tail is
 post-race, forced-gated, additive-only). Remaining eligible cells

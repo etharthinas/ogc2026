@@ -68,6 +68,8 @@ from ortools.sat.python import cp_model
 CAND_CAP = 48          # candidates per window block (entry-band mode)
 PER_BAY_ANCHORS = 10   # raster anchors sampled per (bay, orient), entry-band
 PRESENCE_CAND_CAP = 32     # candidates per block in presence mode (bound size)
+PRESENCE_CAND_CAP_DONOR = 40   # raised cap when donor captures are supplied
+CAND_CAP_DONOR = 56        # raised entry-band cap with donors
 PRESENCE_ANCHORS = 8       # anchors per (bay,orient) in presence mode
 PRESENCE_WIN_CAP = 140     # max window blocks in presence mode
 BUILD_CAP_S = 300.0        # hard cap on pairwise-constraint build (presence)
@@ -115,6 +117,25 @@ def _auto_window(champ):
     c = Counter(ents)
     peak = max(c, key=lambda t: c[t])
     return max(0, peak - 5), peak + 6
+
+
+def _load_donors(spec):
+    """Parse a comma-separated list of capture files (same format as
+    v25_<k>.json). Returns a list of {block_id -> placement dict}. Missing
+    files are skipped with a warning."""
+    donors = []
+    if not spec:
+        return donors
+    for tok in spec.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        path = tok if os.path.isabs(tok) else os.path.join(_HERE, tok)
+        try:
+            donors.append((os.path.basename(tok), _load_champion(path)))
+        except Exception as e:
+            print(f"  WARNING donor '{tok}' not loaded: {e}")
+    return donors
 
 
 def _window_ids(base, t1, t2, presence, win_cap):
@@ -169,7 +190,8 @@ def _entry_choices(a, blk):
 
 
 def _build_pool(base_assign, blocks_data, bays, raster, window_ids, fixed_ids,
-                cand_cap=CAND_CAP, per_bay_anchors=PER_BAY_ANCHORS):
+                cand_cap=CAND_CAP, per_bay_anchors=PER_BAY_ANCHORS,
+                donors=None):
     """One combined-candidate pool per window block: each candidate bundles
     (bay, oi, x, y, entry, exit) and is exact-gated feasible vs the FROZEN
     schedule (block_id tie-break). base candidate (current placement+time) is
@@ -190,13 +212,14 @@ def _build_pool(base_assign, blocks_data, bays, raster, window_ids, fixed_ids,
         prefs = blk["bay_preferences"]
         s_max = max(prefs)
         due = int(blk["due_date"])
+        release = int(blk["release_time"])
         orients = M._unique_orients(blk)
         choices, base_entry = _entry_choices(a, blk)
 
         seen = set()
         cands = []
 
-        def _gate(bay_id, x, y, oi, entry):
+        def _gate(bay_id, x, y, oi, entry, donor=False):
             if len(cands) >= cand_cap:
                 return
             exit_t = entry + proc
@@ -214,7 +237,7 @@ def _build_pool(base_assign, blocks_data, bays, raster, window_ids, fixed_ids,
             cands.append({"bi": bi, "bay": bay_id, "x": int(x), "y": int(y),
                           "oi": oi, "entry": int(entry), "exit": int(exit_t),
                           "proc": proc, "pen3": s_max - prefs[bay_id],
-                          "tard": max(0, exit_t - due)})
+                          "tard": max(0, exit_t - due), "donor": donor})
 
         # 1) base candidate ALWAYS index 0 (feasible fallback / warm hint)
         _gate(a["bay_id"], a["x"], a["y"], a["orient_idx"], base_entry)
@@ -222,7 +245,29 @@ def _build_pool(base_assign, blocks_data, bays, raster, window_ids, fixed_ids,
         for et in choices:
             _gate(a["bay_id"], a["x"], a["y"], a["orient_idx"], et)
 
-        # 3) raster anchors in pref-descending bays (cross-bay) x time choices
+        # 3) DONOR placements (foreign geometry dialect) x full time menu +
+        #    the donor's own entry time. Prioritized before raster fill so they
+        #    are not starved by the cap. Bounds/frozen-feasibility gated;
+        #    deduped against existing candidates.
+        if donors:
+            for _dname, don in donors:
+                da = don.get(bi)
+                if da is None:
+                    continue
+                dbay = da["bay_id"]; doi = da["orient_idx"]
+                if dbay >= n_bays or doi >= len(blk["shape"]):
+                    continue
+                if not M._orient_fits(blk, doi, bays[dbay]):
+                    continue
+                dtimes = list(choices)
+                if da["entry_time"] >= release:
+                    dtimes.append(int(da["entry_time"]))
+                for et in sorted(set(dtimes)):
+                    if len(cands) >= cand_cap:
+                        break
+                    _gate(dbay, da["x"], da["y"], doi, et, donor=True)
+
+        # 4) raster anchors in pref-descending bays (cross-bay) x time choices
         bay_order = sorted(range(n_bays), key=lambda j: -prefs[j])
         time_priority = [base_entry] + [t for t in choices if t != base_entry]
         for bay_id in bay_order:
@@ -653,7 +698,7 @@ def _build_ops_ordered(assign, blocks_data, bays):
 
 def build_band(prob, base, bays, bay_u, raster, t1, t2, presence=False,
                cand_cap=CAND_CAP, anchors=PER_BAY_ANCHORS, win_cap=WIN_MAX,
-               build_deadline=None, progress=False):
+               build_deadline=None, progress=False, donors=None):
     """Construct the pool + CP-SAT model for the window. Returns
     (mdl|None, pool, window_ids, info)."""
     bd = prob["blocks"]
@@ -665,16 +710,20 @@ def build_band(prob, base, bays, bay_u, raster, t1, t2, presence=False,
     fixed_ids = [bi for bi in base if bi not in win_set]
     t0 = time.time()
     pool = _build_pool(base, bd, bays, raster, window_ids, fixed_ids,
-                       cand_cap=cand_cap, per_bay_anchors=anchors)
+                       cand_cap=cand_cap, per_bay_anchors=anchors,
+                       donors=donors)
+    donor_cand = sum(1 for v in pool.values() for c in v if c.get("donor"))
     if progress:
         print(f"    [build] pool ready: window={len(window_ids)} "
               f"total_cand={sum(len(v) for v in pool.values())} "
+              f"donor_cand={donor_cand} "
               f"avg={sum(len(v) for v in pool.values())/len(window_ids):.1f} "
               f"({time.time()-t0:.0f}s)", flush=True)
     mdl = Model(prob, base, window_ids, fixed_ids, pool, bays, bay_u, raster)
     mdl.build(build_deadline=build_deadline, progress=progress, t0=t0)
     info = {"window": len(window_ids),
             "total_cand": sum(len(v) for v in pool.values()),
+            "donor_cand": donor_cand,
             "z": len(mdl.z), "oe": len(mdl.oe), "ox": len(mdl.ox),
             "pair_combos": mdl.n_pair_combos, "hard": mdl.n_hard,
             "order": mdl.n_ordcon, "pairs_capped": mdl.pairs_capped,
@@ -746,12 +795,13 @@ def solve_model(prob, base, mdl, pool, window_ids, bays, bay_u, budget_s):
 
 def solve_band(prob, base, bays, bay_u, raster, t1, t2, budget_s,
                presence=False, cand_cap=CAND_CAP, anchors=PER_BAY_ANCHORS,
-               win_cap=WIN_MAX, build_deadline=None, progress=False):
+               win_cap=WIN_MAX, build_deadline=None, progress=False,
+               donors=None):
     """build_band + solve_model. Used by sweep and default optimize."""
     mdl, pool, window_ids, binfo = build_band(
         prob, base, bays, bay_u, raster, t1, t2, presence=presence,
         cand_cap=cand_cap, anchors=anchors, win_cap=win_cap,
-        build_deadline=build_deadline, progress=progress)
+        build_deadline=build_deadline, progress=progress, donors=donors)
     if mdl is None:
         return None, 0.0, binfo
     mdl.add_warm_start()
@@ -766,7 +816,7 @@ def solve_band(prob, base, bays, bay_u, raster, t1, t2, budget_s,
 # =============================================================================
 
 def optimize(prob, champ, bays, bay_u, raster, t1, t2, budget_s, k,
-             presence=False, gate0_only=False):
+             presence=False, gate0_only=False, donors=None):
     bd = prob["blocks"]
     w = prob.get("weights", {})
     w1, w2, w3 = w.get("w1", 1.0), w.get("w2", 1.0), w.get("w3", 1.0)
@@ -774,7 +824,11 @@ def optimize(prob, champ, bays, bay_u, raster, t1, t2, budget_s, k,
     print(f"  champion recomputed obj={base_obj:,.0f} "
           f"(obj1={b1:.0f} obj2={b2:.0f} obj3={b3:.0f})")
 
-    cand_cap = PRESENCE_CAND_CAP if presence else CAND_CAP
+    have_don = bool(donors)
+    if presence:
+        cand_cap = PRESENCE_CAND_CAP_DONOR if have_don else PRESENCE_CAND_CAP
+    else:
+        cand_cap = CAND_CAP_DONOR if have_don else CAND_CAP
     anchors = PRESENCE_ANCHORS if presence else PER_BAY_ANCHORS
     win_cap = PRESENCE_WIN_CAP if presence else WIN_MAX
     bdl = time.time() + BUILD_CAP_S if presence else None
@@ -782,11 +836,12 @@ def optimize(prob, champ, bays, bay_u, raster, t1, t2, budget_s, k,
     mdl, pool, window_ids, info = build_band(
         prob, champ, bays, bay_u, raster, t1, t2, presence=presence,
         cand_cap=cand_cap, anchors=anchors, win_cap=win_cap,
-        build_deadline=bdl, progress=presence)
+        build_deadline=bdl, progress=presence, donors=donors)
     if mdl is None:
         print(f"  build aborted: {info}")
         return
     print(f"  model: window={info['window']} total_cand={info['total_cand']} "
+          f"donor_cand={info['donor_cand']} "
           f"z={info['z']} oe={info['oe']} ox={info['ox']} "
           f"pair_combos={info['pair_combos']} hard={info['hard']} "
           f"order={info['order']} pairs={info['pairs_done']}/{info['pairs_total']}"
@@ -821,14 +876,18 @@ def optimize(prob, champ, bays, bay_u, raster, t1, t2, budget_s, k,
 # =============================================================================
 
 def sweep(prob, champ, bays, bay_u, raster, k, budget_s, W=12,
-          presence=False):
+          presence=False, donors=None):
     bd = prob["blocks"]
     w = prob.get("weights", {})
     w1, w2, w3 = w.get("w1", 1.0), w.get("w2", 1.0), w.get("w3", 1.0)
     working = {bi: dict(a) for bi, a in champ.items()}
     start_obj = M._objective(working, bd, bays, bay_u, w1, w2, w3)[0]
 
-    cand_cap = PRESENCE_CAND_CAP if presence else CAND_CAP
+    have_don = bool(donors)
+    if presence:
+        cand_cap = PRESENCE_CAND_CAP_DONOR if have_don else PRESENCE_CAND_CAP
+    else:
+        cand_cap = CAND_CAP_DONOR if have_don else CAND_CAP
     anchors = PRESENCE_ANCHORS if presence else PER_BAY_ANCHORS
     win_cap = PRESENCE_WIN_CAP if presence else WIN_MAX
 
@@ -865,7 +924,7 @@ def sweep(prob, champ, bays, bay_u, raster, k, budget_s, W=12,
             new_assign, delta, info = solve_band(
                 prob, working, bays, bay_u, raster, t1, t2, per,
                 presence=presence, cand_cap=cand_cap, anchors=anchors,
-                win_cap=win_cap, build_deadline=bdl)
+                win_cap=win_cap, build_deadline=bdl, donors=donors)
             if new_assign is not None and delta < -0.5:
                 working = new_assign
                 pass_accepts += 1
@@ -916,6 +975,9 @@ def main():
     ap.add_argument("--gate0-only", action="store_true")
     ap.add_argument("--sweep", action="store_true")
     ap.add_argument("--presence", action="store_true")
+    ap.add_argument("--donors", default=None,
+                    help="comma-separated capture files whose per-block "
+                         "placements seed extra candidate anchors")
     ap.add_argument("--width", type=int, default=12)
     args = ap.parse_args()
 
@@ -930,14 +992,17 @@ def main():
     M._reset_caches()
     raster = M._Raster(prob, bays)
 
+    donors = _load_donors(args.donors)
+
     print("=" * 78)
     mode = 'sweep' if args.sweep else ('gate0' if args.gate0_only else 'single')
     print(f"[cpsat_order] prob_{k}  capture={capture}  "
-          f"budget={args.budget_s:.0f}s  mode={mode}  presence={args.presence}")
+          f"budget={args.budget_s:.0f}s  mode={mode}  presence={args.presence}  "
+          f"donors={[d[0] for d in donors]}")
 
     if args.sweep:
         sweep(prob, champ, bays, bay_u, raster, k, args.budget_s,
-              W=args.width, presence=args.presence)
+              W=args.width, presence=args.presence, donors=donors)
         return
 
     if args.t1 is not None and args.t2 is not None:
@@ -948,7 +1013,7 @@ def main():
                          PRESENCE_WIN_CAP if args.presence else WIN_MAX))
     print(f"  window [t1,t2]=[{t1},{t2}]  window_blocks={wn}  bays={len(bays)}")
     optimize(prob, champ, bays, bay_u, raster, t1, t2, args.budget_s, k,
-             presence=args.presence, gate0_only=args.gate0_only)
+             presence=args.presence, gate0_only=args.gate0_only, donors=donors)
 
 
 if __name__ == "__main__":
