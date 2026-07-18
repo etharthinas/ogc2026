@@ -230,6 +230,22 @@ verdict now holds under a model that provably represents the champion.
 Fix in flight: v37s (string-embedded tail, workers lex one string token;
 compile time 34.6ms ≈ v36's 35.8ms) — 10-cell measurement chain running.
 
+### DENSE-POOL CERTIFICATE UPGRADE (2026-07-18, final epoch measurement)
+
+--dense (cand-cap 96, anchors 32, early 18/late 24, 16 workers):
+- prob_27 [42,52]: 65 blocks, 5,384 cands (83/block), 1.87M pair-combos —
+  GATE0 PASS, OPTIMAL, **+0** beyond the known unit.
+- prob_38 [48,58] from clean champion: 105 blocks, 9,400 cands, 3.65M
+  pair-combos, build 164s — GATE0 PASS, OPTIMAL, exactly the same single
+  **−13,333** and nothing more.
+- prob_26 [7,12]: 3,596 cands — OPTIMAL +0.
+The optimality certificates are NOT pool-sparsity artifacts: at 3x
+density the joint (order × geometry × bay × time) neighborhoods of both
+giants are provably exhausted. Loader note: a tail-improved capture can
+fail Gate0 (its replay needs the crane-aware op order, not block_id
+order) — harmless in-pipeline (tail runs once, post-race), but offline
+re-loading of improved captures needs the ordered realizer.
+
 ### EPOCH RESOLUTION (2026-07-18): v37 PROMOTED — row 124,149,848; the
 reproducibility discovery reframes cross-version comparison
 

@@ -75,6 +75,14 @@ PRESENCE_WIN_CAP = 140     # max window blocks in presence mode
 BUILD_CAP_S = 300.0        # hard cap on pairwise-constraint build (presence)
 MAX_EARLY = 9          # earlier-entry candidate times for tardy blocks
 MAX_LATE = 12          # later-entry candidate times within free slack
+# --dense: denser pools to test whether cand-cap sparsity hides multi-unit
+# slack-transfer chains (if not, the window-optimal certificates strengthen).
+DENSE_CAND_CAP = 96
+DENSE_ANCHORS = 32
+DENSE_MAX_EARLY = 18
+DENSE_MAX_LATE = 24
+DENSE_BUILD_CAP_S = 900.0
+DENSE_WORKERS = 16
 SU = 1000              # imbalance (u_j ratio) scale
 WSCALE = 1000          # weight scale (preserves small w2 precisely)
 WIN_MIN, WIN_MAX = 20, 40
@@ -157,7 +165,7 @@ def _champ_order(bi, bj):
 
 # ---- candidate pool (asymmetric slack-aware) -------------------------------
 
-def _entry_choices(a, blk):
+def _entry_choices(a, blk, max_early=MAX_EARLY, max_late=MAX_LATE):
     """Asymmetric time menu for a window block given its current assignment `a`
     (base -- champion / working / resident). Tardy blocks get EARLIER times
     biased toward release; slack-rich blocks get LATER times up to their free
@@ -172,11 +180,15 @@ def _entry_choices(a, blk):
     if base > release:
         span = base - release
         if tard > 0:
-            if span <= MAX_EARLY:
+            if span <= max_early:
                 early = list(range(release, base))
             else:
-                early = [release + i for i in range(0, 6)]
-                early += [release + int(span * f) for f in (0.5, 0.7, 0.85)]
+                # dense-aware early bias: a solid prefix near release plus
+                # spaced samples toward base, up to ~max_early distinct times
+                head = max(6, max_early // 2)
+                early = [release + i for i in range(0, head)]
+                fr = [0.5, 0.6, 0.7, 0.8, 0.9] if max_early > 9 else [0.5, 0.7, 0.85]
+                early += [release + int(span * f) for f in fr]
                 early = sorted({t for t in early if release <= t < base})
         else:
             early = [base - 1]                 # small on-time nudge
@@ -184,14 +196,14 @@ def _entry_choices(a, blk):
     late = []
     unused_slack = (due - proc) - base     # room to enter later, still on time
     if unused_slack > 0:
-        late = list(range(base + 1, base + unused_slack + 1))[:MAX_LATE]
+        late = list(range(base + 1, base + unused_slack + 1))[:max_late]
 
     return sorted({base, *early, *late}), base
 
 
 def _build_pool(base_assign, blocks_data, bays, raster, window_ids, fixed_ids,
                 cand_cap=CAND_CAP, per_bay_anchors=PER_BAY_ANCHORS,
-                donors=None):
+                donors=None, max_early=MAX_EARLY, max_late=MAX_LATE):
     """One combined-candidate pool per window block: each candidate bundles
     (bay, oi, x, y, entry, exit) and is exact-gated feasible vs the FROZEN
     schedule (block_id tie-break). base candidate (current placement+time) is
@@ -214,7 +226,7 @@ def _build_pool(base_assign, blocks_data, bays, raster, window_ids, fixed_ids,
         due = int(blk["due_date"])
         release = int(blk["release_time"])
         orients = M._unique_orients(blk)
-        choices, base_entry = _entry_choices(a, blk)
+        choices, base_entry = _entry_choices(a, blk, max_early, max_late)
 
         seen = set()
         cands = []
@@ -698,7 +710,8 @@ def _build_ops_ordered(assign, blocks_data, bays):
 
 def build_band(prob, base, bays, bay_u, raster, t1, t2, presence=False,
                cand_cap=CAND_CAP, anchors=PER_BAY_ANCHORS, win_cap=WIN_MAX,
-               build_deadline=None, progress=False, donors=None):
+               build_deadline=None, progress=False, donors=None,
+               max_early=MAX_EARLY, max_late=MAX_LATE):
     """Construct the pool + CP-SAT model for the window. Returns
     (mdl|None, pool, window_ids, info)."""
     bd = prob["blocks"]
@@ -711,7 +724,7 @@ def build_band(prob, base, bays, bay_u, raster, t1, t2, presence=False,
     t0 = time.time()
     pool = _build_pool(base, bd, bays, raster, window_ids, fixed_ids,
                        cand_cap=cand_cap, per_bay_anchors=anchors,
-                       donors=donors)
+                       donors=donors, max_early=max_early, max_late=max_late)
     donor_cand = sum(1 for v in pool.values() for c in v if c.get("donor"))
     if progress:
         print(f"    [build] pool ready: window={len(window_ids)} "
@@ -732,7 +745,8 @@ def build_band(prob, base, bays, bay_u, raster, t1, t2, presence=False,
     return mdl, pool, window_ids, info
 
 
-def solve_model(prob, base, mdl, pool, window_ids, bays, bay_u, budget_s):
+def solve_model(prob, base, mdl, pool, window_ids, bays, bay_u, budget_s,
+                workers=8):
     """Solve, realize crane-aware, verify official; lazy no-good repair (<=3
     rounds). Returns (new_assign|None, delta, info). new_assign strictly
     improves and passes check_feasibility, else None."""
@@ -745,7 +759,7 @@ def solve_model(prob, base, mdl, pool, window_ids, bays, bay_u, budget_s):
 
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = float(budget_s)
-    solver.parameters.num_search_workers = 8
+    solver.parameters.num_search_workers = workers
     solver.parameters.random_seed = 1
 
     for rnd in range(3):
@@ -796,19 +810,44 @@ def solve_model(prob, base, mdl, pool, window_ids, bays, bay_u, budget_s):
 def solve_band(prob, base, bays, bay_u, raster, t1, t2, budget_s,
                presence=False, cand_cap=CAND_CAP, anchors=PER_BAY_ANCHORS,
                win_cap=WIN_MAX, build_deadline=None, progress=False,
-               donors=None):
+               donors=None, max_early=MAX_EARLY, max_late=MAX_LATE, workers=8):
     """build_band + solve_model. Used by sweep and default optimize."""
     mdl, pool, window_ids, binfo = build_band(
         prob, base, bays, bay_u, raster, t1, t2, presence=presence,
         cand_cap=cand_cap, anchors=anchors, win_cap=win_cap,
-        build_deadline=build_deadline, progress=progress, donors=donors)
+        build_deadline=build_deadline, progress=progress, donors=donors,
+        max_early=max_early, max_late=max_late)
     if mdl is None:
         return None, 0.0, binfo
     mdl.add_warm_start()
     na, delta, sinfo = solve_model(prob, base, mdl, pool, window_ids,
-                                   bays, bay_u, budget_s)
+                                   bays, bay_u, budget_s, workers=workers)
     binfo.update(sinfo)
     return na, delta, binfo
+
+
+# =============================================================================
+# POOL DENSITY CONFIG
+# =============================================================================
+
+def _pool_cfg(presence, dense, have_donors):
+    """Resolve pool-density knobs. --dense overrides everything with the
+    stress-test settings; otherwise presence/donor caps apply."""
+    if dense:
+        cfg = {"cand_cap": DENSE_CAND_CAP, "anchors": DENSE_ANCHORS,
+               "max_early": DENSE_MAX_EARLY, "max_late": DENSE_MAX_LATE,
+               "build_cap": DENSE_BUILD_CAP_S, "workers": DENSE_WORKERS}
+    else:
+        if presence:
+            cand_cap = PRESENCE_CAND_CAP_DONOR if have_donors else PRESENCE_CAND_CAP
+        else:
+            cand_cap = CAND_CAP_DONOR if have_donors else CAND_CAP
+        cfg = {"cand_cap": cand_cap,
+               "anchors": PRESENCE_ANCHORS if presence else PER_BAY_ANCHORS,
+               "max_early": MAX_EARLY, "max_late": MAX_LATE,
+               "build_cap": BUILD_CAP_S, "workers": 8}
+    cfg["win_cap"] = PRESENCE_WIN_CAP if presence else WIN_MAX
+    return cfg
 
 
 # =============================================================================
@@ -816,7 +855,7 @@ def solve_band(prob, base, bays, bay_u, raster, t1, t2, budget_s,
 # =============================================================================
 
 def optimize(prob, champ, bays, bay_u, raster, t1, t2, budget_s, k,
-             presence=False, gate0_only=False, donors=None):
+             presence=False, gate0_only=False, donors=None, dense=False):
     bd = prob["blocks"]
     w = prob.get("weights", {})
     w1, w2, w3 = w.get("w1", 1.0), w.get("w2", 1.0), w.get("w3", 1.0)
@@ -824,19 +863,15 @@ def optimize(prob, champ, bays, bay_u, raster, t1, t2, budget_s, k,
     print(f"  champion recomputed obj={base_obj:,.0f} "
           f"(obj1={b1:.0f} obj2={b2:.0f} obj3={b3:.0f})")
 
-    have_don = bool(donors)
-    if presence:
-        cand_cap = PRESENCE_CAND_CAP_DONOR if have_don else PRESENCE_CAND_CAP
-    else:
-        cand_cap = CAND_CAP_DONOR if have_don else CAND_CAP
-    anchors = PRESENCE_ANCHORS if presence else PER_BAY_ANCHORS
-    win_cap = PRESENCE_WIN_CAP if presence else WIN_MAX
-    bdl = time.time() + BUILD_CAP_S if presence else None
+    cfg = _pool_cfg(presence, dense, bool(donors))
+    bdl = time.time() + cfg["build_cap"] if (presence or dense) else None
 
     mdl, pool, window_ids, info = build_band(
         prob, champ, bays, bay_u, raster, t1, t2, presence=presence,
-        cand_cap=cand_cap, anchors=anchors, win_cap=win_cap,
-        build_deadline=bdl, progress=presence, donors=donors)
+        cand_cap=cfg["cand_cap"], anchors=cfg["anchors"],
+        win_cap=cfg["win_cap"], build_deadline=bdl,
+        progress=(presence or dense), donors=donors,
+        max_early=cfg["max_early"], max_late=cfg["max_late"])
     if mdl is None:
         print(f"  build aborted: {info}")
         return
@@ -856,7 +891,8 @@ def optimize(prob, champ, bays, bay_u, raster, t1, t2, budget_s, k,
     mdl.add_warm_start()
     remaining = max(5.0, budget_s - info["build_s"])
     na, delta, sinfo = solve_model(prob, champ, mdl, pool, window_ids,
-                                   bays, bay_u, remaining)
+                                   bays, bay_u, remaining,
+                                   workers=cfg["workers"])
     print(f"  solve: status={sinfo.get('status')} nogoods={sinfo.get('nogoods')}"
           f" delta={delta:+,.0f}")
     if na is None:
@@ -876,20 +912,15 @@ def optimize(prob, champ, bays, bay_u, raster, t1, t2, budget_s, k,
 # =============================================================================
 
 def sweep(prob, champ, bays, bay_u, raster, k, budget_s, W=12,
-          presence=False, donors=None):
+          presence=False, donors=None, dense=False):
     bd = prob["blocks"]
     w = prob.get("weights", {})
     w1, w2, w3 = w.get("w1", 1.0), w.get("w2", 1.0), w.get("w3", 1.0)
     working = {bi: dict(a) for bi, a in champ.items()}
     start_obj = M._objective(working, bd, bays, bay_u, w1, w2, w3)[0]
 
-    have_don = bool(donors)
-    if presence:
-        cand_cap = PRESENCE_CAND_CAP_DONOR if have_don else PRESENCE_CAND_CAP
-    else:
-        cand_cap = CAND_CAP_DONOR if have_don else CAND_CAP
-    anchors = PRESENCE_ANCHORS if presence else PER_BAY_ANCHORS
-    win_cap = PRESENCE_WIN_CAP if presence else WIN_MAX
+    cfg = _pool_cfg(presence, dense, bool(donors))
+    cand_cap = cfg["cand_cap"]; anchors = cfg["anchors"]; win_cap = cfg["win_cap"]
 
     ents = [a["entry_time"] for a in champ.values()]
     t_lo, t_hi = min(ents), max(ents)
@@ -920,11 +951,14 @@ def sweep(prob, champ, bays, bay_u, raster, k, budget_s, W=12,
             remaining = deadline - time.time()
             active = sum(1 for d in dirty if d)
             per = max(3.0, min(120.0, remaining / max(1, active)))
-            bdl = time.time() + min(BUILD_CAP_S, per) if presence else None
+            bdl = (time.time() + min(cfg["build_cap"], per)
+                   if (presence or dense) else None)
             new_assign, delta, info = solve_band(
                 prob, working, bays, bay_u, raster, t1, t2, per,
                 presence=presence, cand_cap=cand_cap, anchors=anchors,
-                win_cap=win_cap, build_deadline=bdl, donors=donors)
+                win_cap=win_cap, build_deadline=bdl, donors=donors,
+                max_early=cfg["max_early"], max_late=cfg["max_late"],
+                workers=cfg["workers"])
             if new_assign is not None and delta < -0.5:
                 working = new_assign
                 pass_accepts += 1
@@ -975,6 +1009,9 @@ def main():
     ap.add_argument("--gate0-only", action="store_true")
     ap.add_argument("--sweep", action="store_true")
     ap.add_argument("--presence", action="store_true")
+    ap.add_argument("--dense", action="store_true",
+                    help="stress-test pool density (cand-cap 96, anchors 32, "
+                         "MAX_EARLY 18, MAX_LATE 24, build cap 900s, 16 workers)")
     ap.add_argument("--donors", default=None,
                     help="comma-separated capture files whose per-block "
                          "placements seed extra candidate anchors")
@@ -998,11 +1035,12 @@ def main():
     mode = 'sweep' if args.sweep else ('gate0' if args.gate0_only else 'single')
     print(f"[cpsat_order] prob_{k}  capture={capture}  "
           f"budget={args.budget_s:.0f}s  mode={mode}  presence={args.presence}  "
-          f"donors={[d[0] for d in donors]}")
+          f"dense={args.dense}  donors={[d[0] for d in donors]}")
 
     if args.sweep:
         sweep(prob, champ, bays, bay_u, raster, k, args.budget_s,
-              W=args.width, presence=args.presence, donors=donors)
+              W=args.width, presence=args.presence, donors=donors,
+              dense=args.dense)
         return
 
     if args.t1 is not None and args.t2 is not None:
@@ -1013,7 +1051,8 @@ def main():
                          PRESENCE_WIN_CAP if args.presence else WIN_MAX))
     print(f"  window [t1,t2]=[{t1},{t2}]  window_blocks={wn}  bays={len(bays)}")
     optimize(prob, champ, bays, bay_u, raster, t1, t2, args.budget_s, k,
-             presence=args.presence, gate0_only=args.gate0_only, donors=donors)
+             presence=args.presence, gate0_only=args.gate0_only, donors=donors,
+             dense=args.dense)
 
 
 if __name__ == "__main__":
