@@ -412,9 +412,30 @@ including drainability.** This is the rigorous version of the meta-law: not
 "construction gains get polished away on average" but "the polish is a
 deterministic contraction to a per-instance fixed point independent of seed."
 drain DEAD (correctly delivered). The only conceivable escape is a
-drain-AWARE polish (improve/repack moves preserve drainability) — but that
-requires accepting tardiness-worse moves = basin-hopping = jay-proven dead
-(28a/f). jv6b = research variant; jv6 stays SOTA.
+drain-AWARE polish (improve/repack moves preserve drainability) — which reduces
+to accepting tardiness-worse (uphill) moves. **That escape is also CLOSED** by
+jay's LAHC/SA logs (a31/a39): LAHC on 31 = 0 accepts (11,055,999 → 11,055,999,
+every ruin-recreate worse), LAHC on 39 = +0, SA on 31 = −25,299 only and from
+an 11M start never reaches the pipeline's 8.4M bank. Uphill metaheuristics find
+essentially nothing on the giants. jv6b = research variant; jv6 stays SOTA.
+
+### THE WALL IS COMPLETE — every escape category measured closed
+
+1. **Construction/placement levers** (steal, cmp, zone, drain, cap, tall) →
+   absorbed by the polish.
+2. **Seed selection** → r7 bit-identical proof: the polish is a per-instance
+   absorbing fixed point, INDEPENDENT of seed.
+3. **Uphill metaheuristics** (LAHC, SA) → jay a31/a39: ~0 improvement.
+4. **Basin-hopping / partial restart** → jay 28a/f dead.
+5. **Order-forcing** (schedule-level) → jay 29a–d dead (geometry-blind).
+6. **Cross-paradigm recombination on forced** → jay ceiling experiment dead
+   (27 zero value, 26 model-inexpressible).
+7. **Budget** → 1800s flat.
+
+No known mechanism remains. <110M requires a NON-polish-based architecture
+(a solver that doesn't contract to this fixed point) — a multi-day, high-risk
+rewrite with low success probability. Evidence overwhelmingly supports goal
+renegotiation.
 
 ### Campaign state after night 1 (FINAL)
 **jv6 = 124,478,185 @750s stands as SOTA (this machine, 40/40 feasible).**
