@@ -343,6 +343,17 @@ Note: prob_1 @60s smoke gave 4,035 (not 1,499) — merge-tail CP-SAT draw
 variance at the 60s tail (both obj1=0, both valid); r5's gated edits cannot
 touch prob_1's path. Not a byte-identity break.
 
+### Merge-cap widening (24→40) — DEAD (2026-07-18)
+
+A/B jv6b cap24 vs cap40 @750s on the 4 highest-harvest non-forced cells:
+9 tie (58,395), 16 tie (44,836), 18 tie (54,317), **12 +1,274** (cap40 worse:
+94,773 vs 93,499). The pool is NOT candidate-starved at 24 — widening only
+enlarges the recombination CP-SAT model and can degrade the solve. jay's 24 is
+well-tuned. `OGC_MERGE_CAP` kept (default 24 = byte-safe). The only
+positive-yield family has no headroom left. (Aside: prob_12 cap24 drew 93,499
+here vs the row's 94,773 = −1,274 merge-draw variance, not deterministically
+bankable.)
+
 ### Campaign state after night 1 (FINAL)
 **jv6 = 124,478,185 @750s stands as SOTA (this machine, 40/40 feasible).**
 Live yield sources measured & banked this campaign:
