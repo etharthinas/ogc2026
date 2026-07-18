@@ -354,6 +354,42 @@ positive-yield family has no headroom left. (Aside: prob_12 cap24 drew 93,499
 here vs the row's 94,773 = −1,274 merge-draw variance, not deterministically
 bankable.)
 
+### ★ DRAIN-LOOKAHEAD — joint order+geometry, the definitive capstone (2026-07-18)
+
+Mechanism (the "joint order+geometry" jay's docs called intractable, in a
+bounded tractable form): at each admission, pick the passing cell that leaves
+the most of the next `drain` most-urgent queued blocks still placeable. Directly
+attacks queue-drain rate (ledger_27_diag: 100% of giant obj1 is entry-delay).
+Per-placement & geometry-exact — unlike jay's 29a–d order-forcing (schedule-
+level, geometry-blind).
+
+**probe_drain (clean, raw non-beam) — SIGNAL ×3, and prob_27 RESPONDS:**
+| prob | best raw Δ | o1 | significance |
+|---|---|---|---|
+| **27** | **−2,459,421** | 2226→2063 | **FIRST lever EVER to move 27's construction** (rejected steal/cmp/zone/every order-force/every epoch) |
+| 38 | −2,042,382 | 3258→3106 | large |
+| 39 | −1,542,592 | 922→802 | large |
+
+**r6 A/B @750s {27,38,39} (drain build in giant W0-reclaim) — DEAD at
+portfolio level:** all three cells landed on their KNOWN bimodal draws, no new
+basin. 27: 24,972,962 (the +39,999 draw, not drain). 39: 8,389,519 (won, but
+the ±16,552 bimodality). 38: 37,556,441 in the A/B, but the isolated
+re-bench gave **36,756,532 (repaired basin)** → the A/B value was DRAW VARIANCE,
+**drain is neutral/safe, not starving the pipeline** (jv6b-r6 lands the correct
+basins isolated: 38=36,756,532, 27=24,972,962). Net A/B jv6b −823,356 was pure
+draw noise. **The −2.46M raw construction gain on 27 polished away.**
+
+**This is the campaign's decisive proof.** The best-possible construction lever,
+moving the most-stubborn cell for the first time ever, is STILL absorbed by the
+polish. Chain: raw construction (even drained) ~29M on 27 → polished ~25M; the
+polish reaches ~25M from ANY seed (4M polish gain ≫ 2.4M construction
+difference, and the polish erases the difference). **The construct→polish→merge
+architecture is an absorbing fixed point; no seed-level lever can escape it.**
+The only untried escape — a polish that PRESERVES drainability (accepts
+tardiness-worse moves) — is basin-hopping, which jay proved dead (28a/f:
+"improver-level basin-hopping cannot escape, period"). drain kwarg kept
+default-off; jv6b rejected; jv6 stays SOTA.
+
 ### Campaign state after night 1 (FINAL)
 **jv6 = 124,478,185 @750s stands as SOTA (this machine, 40/40 feasible).**
 Live yield sources measured & banked this campaign:
