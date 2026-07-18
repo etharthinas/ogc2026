@@ -4968,6 +4968,34 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                                 _o0, a0 = _o3, a3
                         except Exception:
                             pass
+                    elif len(blocks_data) >= 250:
+                        # jv6b r5: TEMPORAL ZONING build for the 39-class
+                        # (n>=250, overload<=1.05). probe_zonecombo (clean
+                        # harness): nk32+z24 k0.5/a0.5 = 9,872,219 raw =
+                        # -429k BELOW the deep-nestle family best (10.30M) --
+                        # the FIRST absolute-frontier break since v25. Given
+                        # its own slice to 0.46w (the r1-r4 cmp builds tied by
+                        # truncating in the 0.08w residual; zone re-rank adds
+                        # cost, so it needs the room). Feeds the deep pipeline
+                        # (improve->whole_bay->z3) as the raw-min seed --
+                        # exit-cohort co-location gives the polish a
+                        # fundamentally more drainable layout, not just a
+                        # better-scoring greedy (the class of gain the epoch
+                        # kept polishing away). A/B @750s decides if it
+                        # survives polish + wins the worker race.
+                        try:
+                            _o3, a3 = dispatch(
+                                0.5, 0.5, alpha=0.5, beam=True,
+                                nearmiss=8, nk=32, zone=24,
+                                dl=t_start + 0.46 * window)
+                            import os as _oss
+                            if _oss.environ.get("OGC_DEBUG"):
+                                print(f"[zone39] raw={_o3:,.0f} "
+                                      f"parent_min={_o0:,.0f}", flush=True)
+                            if _o3 < _o0:
+                                _o0, a0 = _o3, a3
+                        except Exception:
+                            pass
                 else:
                     _o0, a0 = dispatch(2.0, 0.5, alpha=0.5)
             except Exception:
@@ -5011,6 +5039,25 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
             drng = random.Random(9099)
             cands = []
             cap = t_start + 0.5 * window
+            if nm_elig and overload <= 0.72:
+                # jv6b r5: TEMPORAL ZONING seed for the 31-class (forced non-
+                # giant, overload<=0.72 -> exactly {31}). probe_zonecombo
+                # (clean harness): cmp+z24 k0.5/a0.5 = 9,091,978 raw = -1.2M
+                # BELOW the deep-nestle family best. ADDED to the restoration
+                # lottery's cands (min-wins, non-displacing -- the 8-config
+                # loop still runs its full 0.5w budget); polish_v13 seeds its
+                # improve->cpsat->whole_bay->z3 chain from the raw-min, so a
+                # more-drainable zoned layout feeds the real deep pipeline.
+                try:
+                    _oz, _az = dispatch(0.5, 0.5, drng, alpha=0.5, beam=True,
+                                        nearmiss=8, nm_compete=True, zone=24,
+                                        dl=t_start + 0.30 * window)
+                    cands.append((_oz, _az))
+                    import os as _oss
+                    if _oss.environ.get("OGC_DEBUG"):
+                        print(f"[zone31] raw={_oz:,.0f}", flush=True)
+                except Exception:
+                    pass
             plan = [(0.5, 0.5, 0.0, None), (1.0, 0.5, 0.5, None),
                     (2.0, 0.5, 1.0, None), (4.0, 0.5, 0.0, None),
                     (1.0, 2.0, 0.5, None), (2.0, 0.0, 1.0, None),

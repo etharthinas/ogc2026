@@ -289,6 +289,33 @@ level (jv6b keeps the two harmless clean-premise deliveries as sandbox).
 nk32+cmp grid explosion reproduces cleanly (borderline on 39: k1.0 ok,
 k0.5 explodes) — the merged-grid cost is structural, do not revisit.
 
+### ★ TEMPORAL ZONING — new family, breaks the absolute frontier (2026-07-18)
+
+Mechanism (absent from both graveyards): re-rank the top-`zone` contact cells
+to prefer cells whose resident spatial NEIGHBORS exit near the new block's
+exit_t. Co-locating exit cohorts makes each exit wave free ONE LARGE contiguous
+region instead of scattered nibbled holes (the measured fragmentation source;
+100% of giant obj1 is entry-delay). Not a better-scoring greedy — a
+structurally more *drainable* layout, the one axis the polish-away meta-law
+may not cover.
+
+**probe_zone (clean harness) — SIGNAL ×4**: 38 −2.97M, 27 −489k, 39 −1.40M,
+31 −1.99M (best rel Δ). **probe_zonecombo abs-best per cell**:
+| prob | winning config | raw | vs family best | vs 750s bank |
+|---|---|---|---|---|
+| **39** | nk32+z24 k0.5/a0.5 | **9,872,219** | **−429k** (10.30M) | +1.48M (8.39M) |
+| **31** | cmp+z24 k0.5/a0.5 | **9,091,978** | **−1.21M** (10.30M) | +0.69M (8.40M) |
+| 38 | cmp+z12 k1.0/a0.0 | 41,057,861 | −6k (tie) | +4.30M | frontier unbroken |
+
+39 and 31 are the **first absolute-frontier breaks since v25's deep-nestle**.
+Raw is still above the polished bank (expected — raw is the seed), so the
+decisive question is whether the zoned seed SURVIVES polish. r5 wires it into
+the real deep pipelines: 39 → W0-reclaim raw-min seed (feeds improve→whole_bay
+→z3); 31 → restoration-lottery cand (feeds polish_v13's improve→cpsat→whole_bay
+→z3). Both use drng=9099 (probe-matched). A/B @750s {39,31,38} running.
+One degenerate: 38 k1.0/z12 timed out in probe (203M) — zone re-rank cost;
+guarded by giving the build its own 0.46w slice, not the residual.
+
 ### Campaign state after night 1
 jv6 = 124,478,185 @750s stands. Live yield sources measured this campaign:
 Phase A bug-repair (−799,909), merge-tail × Phase D re-harvest (−383,875),
