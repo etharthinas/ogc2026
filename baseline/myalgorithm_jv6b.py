@@ -3553,7 +3553,7 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
                         kappa=1.0, gamma=0.5, rng=None, cand_cap=12,
                         alpha=0.0, score_pos=False, eps=0.15, targets=None,
                         beam=False, beam_m=4, nearmiss=0, mpc=False,
-                        ovh=False, steal=0, nm_compete=False):
+                        ovh=False, steal=0, nm_compete=False, zone=0):
     """Event-driven admission construction using the raster full-position scan.
 
     Walk event times (releases + scheduled exits); at each event admit queued
@@ -3650,6 +3650,37 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
                                      raster.W[bay_id], occ_fp, score_pos, rng,
                                      ovh_bay=bay_id if ovh else None,
                                      ovh_w=float(ovh) * 2.0 if ovh else 2.0)
+                if zone:
+                    # jv6b TEMPORAL ZONING (untried family, 2026-07-18): among
+                    # the top-`zone` contact-ranked cells, prefer cells whose
+                    # spatial NEIGHBORS exit near this block's exit_t -- co-
+                    # locating exit cohorts makes each exit wave free one
+                    # LARGE contiguous region instead of scattered holes (the
+                    # measured fragmentation source on the burst giants).
+                    # Mismatch is quantized (/4) so contact order still
+                    # tie-breaks within a cohort band; isolated cells get a
+                    # neutral mid-band. Exact _can_place gating unchanged.
+                    resb = [(it[2], it[3]) for it in sched[bay_id]
+                            if it[2] > t]
+                    if resb:
+                        head = cells[:zone]
+
+                        def _mism(c):
+                            x, y = c
+                            tot = 0.0
+                            cnt = 0
+                            for (ex, bb) in resb:
+                                dx = max(bb[0] - x, x - bb[2], 0.0)
+                                dy = max(bb[1] - y, y - bb[3], 0.0)
+                                if dx + dy <= 6.0:
+                                    tot += abs(ex - exit_t)
+                                    cnt += 1
+                            return (tot / cnt) if cnt else pbar
+
+                        order2 = sorted(range(len(head)),
+                                        key=lambda i: (int(_mism(head[i]) / 4),
+                                                       i))
+                        cells = [head[i] for i in order2] + cells[zone:]
                 tried = 0
                 for (x, y) in cells:
                     nb = _mkblock(bi, blk, x, y, oi)
