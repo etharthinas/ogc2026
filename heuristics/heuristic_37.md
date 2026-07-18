@@ -124,4 +124,48 @@ window tried on {26, 38}.
 
 ## Results
 
-(to be filled by execution)
+### Calibration (2026-07-18, from captures — new numbers)
+
+- Ordering-only obj1 floors (perfect redistribution of the realized total
+  delay onto slack, throughput unchanged): prob_38 = 1939 (realized 2569),
+  prob_27 = 1297 (realized 1726) → ordering-only ceiling ≈ −14.1M combined.
+  The relax@0.7 targets (1219/615) are BELOW these floors → reaching them
+  requires density/defrag gains on top of ordering.
+- Slack-waster census (champion captures): prob_38 has 120 blocks holding
+  527 units of unused slack (~7.0M transferable at w1), prob_27 has 72
+  blocks / 348 units (~4.6M). The currency for slack-transfer trades exists.
+
+### 37a stochastic LNS — KILLED at its criterion (2026-07-18)
+
+st_lns.py sound (drift 0.0 vs official checker; nonmonotone insertion
+validated — re-placed a tardy block 52 ticks earlier after clearing its
+blockers). But @600s: prob_38 945 iters / prob_27 1823 iters, ZERO accepts
+on both (also 0 on prob_26 smoke). LAW: at this saturation, stochastic
+destroy + greedy sequential earliest-feasible repair cannot assemble the
+coordinated multi-block trades — every single-chain move strands its
+displaced set at a net loss. The joint lever needs EXACT repair.
+
+### 37c order-aware windowed CP-SAT — ALIVE: first prob_38 improvement
+since v25
+
+- GATE 0 PASSES on prob_26 AND prob_38 (all 10 windows tried): the
+  champion is representable once intra-tick order literals exist. The
+  historical "pairwise model inexpressibility" (heuristic_32) is REFUTED —
+  the missing piece was same-tick op ordering, not 3-way sweep geometry
+  (utils.check_entry/check_exit are purely pairwise given the presence
+  set).
+- Burst sweep on prob_38 (9 windows @120s, narrow v1 pools): window
+  [48,58] banked a VERIFIED −13,333 (obj1 −1; official 36,322,548) — the
+  first accepted improvement on prob_38 by any mechanism since v25.
+  8/9 windows champion-optimal-within-pool, all proved in 0.0s → POOLS,
+  not solver capacity, are binding.
+- prob_26 burst window: champion-optimal within pool (consistent with the
+  locked-mass verdict).
+- One lossiness found and fixed: frozen↔window same-tick order was baked
+  at block_id order → one window's alternate rejected by official replay
+  (gate caught it). v2 realizer topo-sorts same-tick ops crane-aware +
+  lazy no-good-cut repair.
+- v2 (sweep mode): overlapping bands, apply-and-continue passes,
+  asymmetric slack-aware pools (tardy → earlier times down to release;
+  slack-rich → free later times within slack; cross-bay menus; 39.5
+  cand/block vs 18.5 in v1). Measurement in flight.
