@@ -4007,12 +4007,19 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
             if time.time() > deadline:
                 break
             committed = []
-            for bi in od:
+            for pos, bi in enumerate(od):
                 if time.time() > deadline:
                     break
                 if targets is not None and t < targets[bi]:
                     continue
-                place = try_place(bi, t, cc)
+                # jv6b drain lookahead inside the beam fill: the next `drain`
+                # blocks in this order (release-passed) are the ones this
+                # placement must not foreclose.
+                look = None
+                if drain:
+                    look = [b for b in od[pos + 1:]
+                            if targets is None or t >= targets[b]][:drain]
+                place = try_place(bi, t, cc, look=look)
                 if place is not None:
                     commit(bi, place)         # trial: mutate only, no bookkeeping
                     committed.append((bi, place))
@@ -4998,53 +5005,34 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                             _o0, a0 = _o2, a2
                     except Exception:
                         pass
-                    # jv6b: NM_COMPETE build (probe_nmc 2026-07-17). The nk3-
-                    # cmp signal on prob_38 (-2,674,658 / -2,345,442 raw vs
-                    # controls) is CLEAN (38 was the probe process's first
-                    # instance, before the cache-contamination window; see
-                    # r4 note above -- the 39-branch premise was garbage and
-                    # is removed). A/B @750s on 38: bit-identical tie (the
-                    # build runs in the truncated 0.38w->0.46w residual and/
-                    # or its stream loses the race) -- kept as harmless until
-                    # the clean re-probe decides a better slot.
-                    if len(blocks_data) >= 250 and overload > 1.05:
-                        try:
-                            _o3, a3 = dispatch(
-                                0.5, 0.5, alpha=0.5, beam=True,
-                                nearmiss=8, nm_compete=True,
-                                dl=t_start + 0.46 * window)
-                            if _o3 < _o0:
-                                _o0, a0 = _o3, a3
-                        except Exception:
-                            pass
-                    elif len(blocks_data) >= 250:
-                        # jv6b r5: TEMPORAL ZONING build for the 39-class
-                        # (n>=250, overload<=1.05). probe_zonecombo (clean
-                        # harness): nk32+z24 k0.5/a0.5 = 9,872,219 raw =
-                        # -429k BELOW the deep-nestle family best (10.30M) --
-                        # the FIRST absolute-frontier break since v25. Given
-                        # its own slice to 0.46w (the r1-r4 cmp builds tied by
-                        # truncating in the 0.08w residual; zone re-rank adds
-                        # cost, so it needs the room). Feeds the deep pipeline
-                        # (improve->whole_bay->z3) as the raw-min seed --
-                        # exit-cohort co-location gives the polish a
-                        # fundamentally more drainable layout, not just a
-                        # better-scoring greedy (the class of gain the epoch
-                        # kept polishing away). A/B @750s decides if it
-                        # survives polish + wins the worker race.
-                        try:
-                            _o3, a3 = dispatch(
-                                0.5, 0.5, alpha=0.5, beam=True,
-                                nearmiss=8, nk=32, zone=24,
-                                dl=t_start + 0.46 * window)
-                            import os as _oss
-                            if _oss.environ.get("OGC_DEBUG"):
-                                print(f"[zone39] raw={_o3:,.0f} "
-                                      f"parent_min={_o0:,.0f}", flush=True)
-                            if _o3 < _o0:
-                                _o0, a0 = _o3, a3
-                        except Exception:
-                            pass
+                    # jv6b r6: DRAIN-LOOKAHEAD build for the nm_elig reclaim
+                    # giants {27,38,39} -- REPLACES the r1-r5 cmp/zone 4th
+                    # builds (both measured tie/reject). Per-placement joint
+                    # order+geometry: pick the passing cell leaving the most
+                    # of the next 8 urgent queued blocks placeable (directly
+                    # attacks queue-drain, the measured 100%-of-obj1 giant
+                    # bottleneck). probe_drain (clean, raw non-beam): 27
+                    # -2,459,421, 38 -2,042,382, 39 -1,542,592 -- and 27
+                    # RESPONDS for the first time in the whole campaign. Given
+                    # a wide 0.50w slice (drain lookahead is ~2-4x build cost;
+                    # beam+drain measured ~63s on 39, fits). Feeds the deep
+                    # pipeline as the raw-min seed. A/B @750s is the decisive
+                    # polish-survival test (raw is still above the beam family
+                    # best, so this only banks if the drained layout lands the
+                    # polish in a basin the standard seed can't reach).
+                    try:
+                        _o3, a3 = dispatch(
+                            1.0, 0.5, alpha=0.0, beam=True,
+                            nearmiss=8, nk=32, drain=8,
+                            dl=t_start + 0.50 * window)
+                        import os as _oss
+                        if _oss.environ.get("OGC_DEBUG"):
+                            print(f"[drain] raw={_o3:,.0f} "
+                                  f"parent_min={_o0:,.0f}", flush=True)
+                        if _o3 < _o0:
+                            _o0, a0 = _o3, a3
+                    except Exception:
+                        pass
                 else:
                     _o0, a0 = dispatch(2.0, 0.5, alpha=0.5)
             except Exception:
