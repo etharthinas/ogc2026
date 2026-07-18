@@ -201,3 +201,22 @@ presence repack of whatever champion emerges) proceeds as v37 regardless;
 (3) if 37b dies, the honest conclusion is that ~124.1M is the effective
 optimum of this architecture, now backed by exact certificates rather
 than exhausted-mechanism induction.
+
+### v37 INTEGRATED AND VERIFIED IN-PIPELINE (2026-07-18)
+
+myalgorithm_37.py = myalgorithm_36.py byte-copy + vendored `_tail37_order`
+(self-contained presence-window order-CP-SAT tail; gate: forced/w1≥6000,
+remaining ≥120s; top-2 queue-peak bands width 10, window cap 110; strict
+official-check min-wins accept; hard deadline discipline). Verified @900s
+serial, quiet machine:
+- prob_38 = 36,322,548 (633.0s, feasible, obj1 2568) — v36 cell was
+  36,351,493 → **−28,945** (race lands the 36,335,881 basin, tail −13,333).
+- prob_27 = 24,959,629 (600.7s, feasible, obj1 1725) — v36 cell
+  24,972,962 → **−13,333**.
+Total verified so far: **−42,278**; projected v37 row ≈ 124,099,220
+(< v36 124,141,498; other cells byte-identical by construction — tail is
+post-race, forced-gated, additive-only). Remaining eligible cells
+{23,26,30,31,33,39,37} to spot-measure for further tail wins before the
+row is recorded. 37b DTC ladder (fixed harness: w=0 ≡ stock byte-identical,
+Stage-5 reorder rescue, INFEASIBLE reporting with stage attribution) in
+flight on prob_38.
