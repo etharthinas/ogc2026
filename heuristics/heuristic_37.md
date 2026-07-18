@@ -213,6 +213,23 @@ serial, quiet machine:
   36,351,493 → **−28,945** (race lands the 36,335,881 basin, tail −13,333).
 - prob_27 = 24,959,629 (600.7s, feasible, obj1 1725) — v36 cell
   24,972,962 → **−13,333**.
+### v37-AST full spot scorecard @900s (2026-07-18, quiet serial) and the
+parse-latency displacement law
+
+v37 (vendored ~700 AST lines + lazy ortools) vs v36 cells: 38 −28,945
+(favorable basin flip 36,335,881 + tail −13,333), 27 −13,333, 33 −6,667,
+23 −13,559 (fresh tail win, never offline-probed), 26/31/39/30 byte-
+identical, **37 +70,854 (v36's favorable @900s roll LOST; tail recovered
+only ~36k of the +107k basin loss)**. Net −8,350 pending 32. LAW
+(sharpens v33's token-identity law): worker import PARSE latency is the
+displacement mechanism — module-level ortools import (+~1s) AND the mere
++4.6ms of extra AST both flipped forced basins; lazy ortools alone did
+NOT restore 37. Donor-dialect pools (v18-era + DTC packings) in the sound
+order-aware model: 0 accepts on BOTH 38 and 27 — heuristic_32's diversity
+verdict now holds under a model that provably represents the champion.
+Fix in flight: v37s (string-embedded tail, workers lex one string token;
+compile time 34.6ms ≈ v36's 35.8ms) — 10-cell measurement chain running.
+
 Mid-tier presence sweeps (offline, on v25 captures, 600s): prob_37
 **−41,190** (3 accepts; w1=3333 → 12 obj1 units — low-w1 instances hold
 more reachable units), prob_33 **−6,667** (1 unit); 26/31/39 zero (locked).
