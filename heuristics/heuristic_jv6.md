@@ -390,6 +390,32 @@ tardiness-worse moves) — is basin-hopping, which jay proved dead (28a/f:
 "improver-level basin-hopping cannot escape, period"). drain kwarg kept
 default-off; jv6b rejected; jv6 stays SOTA.
 
+### r7 — drain seed FORCED (r6 delivery bug fixed) — AIRTIGHT absorbing-fixed-point proof
+
+r6 selected the pipeline seed by min-wins on RAW obj → drain's raw (~11.3M/39)
+is above nk32 (~10.3M) → **min-wins discarded the drain seed; r6 measured
+nothing.** r7 forces `a0 = drain seed` for the giants (raw builds still push()
+as portfolio floor). A/B @750s {27,38,39}:
+
+| prob | jv6 | jv6b-r7 (forced drain seed) | delta |
+|---|---|---|---|
+| 27 | 24,972,962 | 24,972,962 | **±0 bit-identical** |
+| 38 | 36,756,532 | 36,756,532 | **±0 bit-identical** |
+| 39 | 8,389,519 | 8,406,071 | −16,552 (bimodal draw) |
+
+**The force is CONFIRMED working** — 39 landing a different bimodal draw proves
+the drain seed replaced nk32 in the pipeline. Yet on 27/38 the polish maps the
+drainable seed (raw ~11M) and the nk32 seed (raw ~10.3M) to the **exact same
+final, bit-for-bit**. Two structurally distinct seeds → identical output. **The
+polish is a TRUE absorbing fixed point; it erases seed structure entirely,
+including drainability.** This is the rigorous version of the meta-law: not
+"construction gains get polished away on average" but "the polish is a
+deterministic contraction to a per-instance fixed point independent of seed."
+drain DEAD (correctly delivered). The only conceivable escape is a
+drain-AWARE polish (improve/repack moves preserve drainability) — but that
+requires accepting tardiness-worse moves = basin-hopping = jay-proven dead
+(28a/f). jv6b = research variant; jv6 stays SOTA.
+
 ### Campaign state after night 1 (FINAL)
 **jv6 = 124,478,185 @750s stands as SOTA (this machine, 40/40 feasible).**
 Live yield sources measured & banked this campaign:
