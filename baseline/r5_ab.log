@@ -1,0 +1,15 @@
+﻿=== smoke jv6b 60s prob_1 (expect 1,499) 2026-07-18T14:54:24.8104652+09:00 ===
+prob_ 1:          4,035  ( 58.7s)  obj1=0.0 obj2=5 obj3=20.0
+------------------------------------------------------------
+TOTAL (feasible only) = 4,035   feasible 1/1
+=== A/B jv6 vs jv6b-r5 750s {39 31 38} 2026-07-18T14:55:25.9088003+09:00 ===
+prob_39: myalgorithm_jv6[total=8,389,519 z1=553 z2=2805 z3=6701] (705.7s)
+         myalgorithm_jv6b[total=8,406,071 z1=553 z2=2743 z3=6813] (702.6s) | lex=myalgorithm_jv6 weighted_delta(A-B)=-16,552
+prob_31: myalgorithm_jv6[total=8,400,210 z1=417 z2=6053 z3=10570] (691.5s)
+         myalgorithm_jv6b[total=8,400,210 z1=417 z2=6053 z3=10570] (694.0s) | lex=tie weighted_delta(A-B)=+0
+prob_38: myalgorithm_jv6[total=36,756,532 z1=2598 z2=2399 z3=7042] (706.7s)
+         myalgorithm_jv6b[total=37,556,441 z1=2673 z2=2866 z3=6372] (704.3s) | lex=myalgorithm_jv6 weighted_delta(A-B)=-799,909
+------------------------------------------------------------------------------------------
+myalgorithm_jv6 total=53,546,261   myalgorithm_jv6b total=54,362,722   improvement=-816,461
+obj1 sums: myalgorithm_jv6=3,568 myalgorithm_jv6b=3,643 | lex wins myalgorithm_jv6=2 myalgorithm_jv6b=0 ties=1
+=== DONE 2026-07-18T16:05:33.4546920+09:00 ===

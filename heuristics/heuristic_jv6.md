@@ -316,10 +316,53 @@ the real deep pipelines: 39 → W0-reclaim raw-min seed (feeds improve→whole_b
 One degenerate: 38 k1.0/z12 timed out in probe (203M) — zone re-rank cost;
 guarded by giving the build its own 0.46w slice, not the residual.
 
-### Campaign state after night 1
-jv6 = 124,478,185 @750s stands. Live yield sources measured this campaign:
-Phase A bug-repair (−799,909), merge-tail × Phase D re-harvest (−383,875),
-750s draw shifts (net ≈ +46k after corrections... 37 −107k bimodal vs 33/27
-artifacts corrected). Everything else (steal, cmp, cap, tall, mid-tier
-tickets, W2/W1 appends): dead or delivery-blocked. This mirrors jay's
-v26–v34 closed-epoch conclusion on the forced mass.
+### r5 A/B @750s {39,31,38} — ZONING DEAD AT PORTFOLIO LEVEL (2026-07-18 16:05)
+
+| prob | jv6 | jv6b-r5 | delta | verdict |
+|---|---|---|---|---|
+| 39 | 8,389,519 | 8,406,071 | **+16,552** | zone seed NOT better (draw noise) |
+| 31 | 8,400,210 | 8,400,210 | **±0** | bit-identical — polished away |
+| 38 | 36,756,532 | 37,556,441 | +799,909 | **draw variance** — 38 path byte-identical in r5 (edits gated to 39/31); 38 is the documented timing-bistable giant |
+
+**Verdict: the −429k/−1.21M raw-frontier breaks on 39/31 do NOT survive the
+deep pipeline.** improve→whole_bay→z3 moves blocks and destroys the exit-cohort
+co-location, converging to the same joint fixed point. **Root cause (sharp):
+zoning optimizes a PROXY — future drainability — that the polish's objective
+(realized tardiness) does not reward until later, so the polish greedily trades
+it away.** Identical death-class to jv5 Phase C (mpc = area proxy) and the
+relaxation certificates (29d). A raw-frontier break is necessary but NOT
+sufficient; only a lever the polish's own objective rewards can bank.
+
+**jv6b REJECTED. jv6 (124,478,185) stays SOTA.** The zone kwarg + probes are
+kept for provenance (default-off, prob_1 unaffected). Deeper integration
+(zone-aware cell ordering INSIDE improve/repack, so drainability survives
+polish) is the only untried variant — LOW priority, large change, same proxy
+risk. Not pursued tonight.
+
+Note: prob_1 @60s smoke gave 4,035 (not 1,499) — merge-tail CP-SAT draw
+variance at the 60s tail (both obj1=0, both valid); r5's gated edits cannot
+touch prob_1's path. Not a byte-identity break.
+
+### Campaign state after night 1 (FINAL)
+**jv6 = 124,478,185 @750s stands as SOTA (this machine, 40/40 feasible).**
+Live yield sources measured & banked this campaign:
+- Phase A dispatch-bug repair: **−799,909** (prob_38)
+- merge-tail × Phase D re-harvest: **−383,875** (21 non-forced cells)
+- (750s draw shifts net near-zero after artifact corrections)
+
+**Every other lever measured DEAD or delivery-blocked this campaign:**
+steal (config-rescue), nm_compete (config-rescue), cap-widening (subsumed),
+tall-forcing (+1.7–14M), mid-tier tickets (W2-append structurally dead),
+**temporal zoning (raw-frontier-breaking but polish-flattened proxy)**.
+
+**Conclusion — goal <110M is not reachable with known mechanisms.** Remaining
+gap −14.5M. The measured yield of EVERY constructive lever family this campaign
++ jay's entire v26–v34 closed epoch (−245k total) + the geometry-blind relax
+UBs (29d) + budget-flat 1800s probe all point to the same wall: the forced-
+giant mass (38+27 = ~50%) is a joint fixed point of construction×polish, and
+the polish flattens any seed-level or proxy-level gain. Only a fundamentally
+different SOLVER (joint order+geometry, no tractable form known) could move it.
+Evidence supports **renegotiating the goal** (jay's v32 doc reached the same
+recommendation). Deliverable-ready: promote jv6→myalgorithm.py; hand jay the
+dispatch-bug (+0.8M for their line) and the probe cache-contamination bug
+(invalidates their multi-instance probe numbers too).
