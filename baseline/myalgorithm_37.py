@@ -5850,10 +5850,25 @@ def _tail35_cpsat(prob_info, champ_assign, bays, bay_u, w1, w2, w3, deadline,
 # every solve is capped by an absolute hard_deadline that leaves >=10s slack
 # for the final ops build; the stage never overruns t_start + timelimit.
 # =============================================================================
-try:
-    from ortools.sat.python import cp_model as _cp_model
-except Exception:                                     # pragma: no cover
-    _cp_model = None
+# ortools must NOT be imported at module level: every spawned worker
+# re-imports this module, and the extra ~1s startup latency displaces the
+# cross-worker race lotteries (v37 spot runs measured prob_37 +70,854 /
+# prob_38 basin flip vs v36 cells with an eager import here). Lazy-load in
+# the parent-side tail only.
+_cp_model = None
+_T37_CP_TRIED = False
+
+
+def _t37_cp():
+    global _cp_model, _T37_CP_TRIED
+    if not _T37_CP_TRIED:
+        _T37_CP_TRIED = True
+        try:
+            from ortools.sat.python import cp_model as m
+            _cp_model = m
+        except Exception:                             # pragma: no cover
+            _cp_model = None
+    return _cp_model
 
 # ---- tunables (mirror cpsat_order presence mode) ----------------------------
 _T37_PRESENCE_CAND_CAP = 32     # candidates per block in presence mode
@@ -6467,7 +6482,7 @@ def _tail37_order(prob_info, champ_assign, bays, bay_u, w1, w2, w3,
 
     Gate: remaining budget >= 120s AND (forced instance OR w1 >= 6000 with
     tardy blocks present). Skips silently otherwise."""
-    if _cp_model is None or not _HAVE_NUMPY:
+    if _t37_cp() is None or not _HAVE_NUMPY:
         return None
     n_bays = len(bays)
     if n_bays < 2:
