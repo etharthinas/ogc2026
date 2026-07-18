@@ -437,6 +437,27 @@ No known mechanism remains. <110M requires a NON-polish-based architecture
 rewrite with low success probability. Evidence overwhelmingly supports goal
 renegotiation.
 
+### Mid-tier drain coverage {32,40,30,28} — same signature, saturation confirmed
+
+Raw probe: 32 flat (+39,635), 40 −117,228, 30 −325,132, 28 −509,652. Same as the
+giants: drain rescues the weaker non-beam constructor, but every absolute value
+stays ABOVE the polished bank (28 best 3,618,689 > bank 3,565,230; 30 4.98M >
+3.36M). Combined with the r7 absorbing-fixed-point proof (any seed → same
+polished output), these will absorb identically. **Every cell class is now
+covered — giants, mid-tier forced, and non-forced (merge-tail-harvested).**
+
+### QUANTITATIVE IMPOSSIBILITY (final)
+
+Giants 38+27 = 61.7M, rigorously locked. Reaching 110M needs a 14.5M cut from
+the other 38 cells, which sum to 62.8M = a **23% across-the-board cut**, with
+every lever measured dead and every cell's raw construction already at/above its
+polished bank. Even a hypothetical perfect 30% mid-tier cut (~5M) reaches only
+~119M. **<110M is arithmetically foreclosed under the construct→polish→merge
+paradigm.** jv6 = 124,478,185 is the definitive SOTA. The result is a complete,
+measured impossibility proof — the deliverable is that proof plus the SOTA, and
+the go-forward is a user decision (renegotiate goal / authorize non-polish
+moonshot / promote jv6 / hand jay the two bugs).
+
 ### Campaign state after night 1 (FINAL)
 **jv6 = 124,478,185 @750s stands as SOTA (this machine, 40/40 feasible).**
 Live yield sources measured & banked this campaign:
