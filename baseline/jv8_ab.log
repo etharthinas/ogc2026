@@ -1,0 +1,23 @@
+prob_37: myalgorithm_jv6[total=5,807,047 z1=899 z2=2620 z3=4667] (700.6s)
+         myalgorithm_jv8[total=5,807,047 z1=899 z2=2620 z3=4667] (701.6s) | lex=tie weighted_delta(A-B)=+0
+prob_39: myalgorithm_jv6[total=8,389,519 z1=553 z2=2805 z3=6701] (702.4s)
+         myalgorithm_jv8[total=8,389,519 z1=553 z2=2805 z3=6701] (702.6s) | lex=tie weighted_delta(A-B)=+0
+prob_27: myalgorithm_jv6[total=24,932,963 z1=1723 z2=502 z3=4898] (689.4s)
+         myalgorithm_jv8[total=24,074,569 z1=1669 z2=96 z3=4554] (690.2s) | lex=myalgorithm_jv8 weighted_delta(A-B)=+858,394
+prob_38: myalgorithm_jv6[total=36,756,532 z1=2598 z2=2399 z3=7042] (701.8s)
+         myalgorithm_jv8[total=36,756,532 z1=2598 z2=2399 z3=7042] (702.3s) | lex=tie weighted_delta(A-B)=+0
+prob_23: myalgorithm_jv6[total=2,494,797 z1=157 z2=862 z3=1800] (688.4s)
+         myalgorithm_jv8[total=2,494,797 z1=157 z2=862 z3=1800] (689.7s) | lex=tie weighted_delta(A-B)=+0
+prob_32: myalgorithm_jv6[total=3,881,748 z1=616 z2=2844 z3=3024] (694.8s)
+         myalgorithm_jv8[total=3,881,748 z1=616 z2=2844 z3=3024] (690.7s) | lex=tie weighted_delta(A-B)=+0
+prob_34: myalgorithm_jv6[total=1,978,590 z1=181 z2=2538 z3=2547] (748.2s)
+         myalgorithm_jv8[total=1,898,254 z1=163 z2=2830 z3=2505] (749.4s) | lex=myalgorithm_jv8 weighted_delta(A-B)=+80,336
+prob_35: myalgorithm_jv6[total=1,688,817 z1=99 z2=4020 z3=2325] (748.1s)
+         myalgorithm_jv8[total=1,345,948 z1=76 z2=2178 z3=2145] (748.9s) | lex=myalgorithm_jv8 weighted_delta(A-B)=+342,869
+prob_21: myalgorithm_jv6[total=1,380,772 z1=74 z2=1178 z3=2549] (707.0s)
+         myalgorithm_jv8[total=1,371,049 z1=73 z2=1119 z3=2577] (747.8s) | lex=myalgorithm_jv8 weighted_delta(A-B)=+9,723
+prob_29: myalgorithm_jv6[total=557,994 z1=0 z2=3998 z3=1820] (747.7s)
+         myalgorithm_jv8[total=548,511 z1=0 z2=4137 z3=1787] (748.4s) | lex=myalgorithm_jv8 weighted_delta(A-B)=+9,483
+------------------------------------------------------------------------------------------
+myalgorithm_jv6 total=87,868,779   myalgorithm_jv8 total=86,567,974   improvement=+1,300,805
+obj1 sums: myalgorithm_jv6=6,900 myalgorithm_jv8=6,804 | lex wins myalgorithm_jv6=0 myalgorithm_jv8=5 ties=5
