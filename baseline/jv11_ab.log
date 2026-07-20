@@ -1,0 +1,9 @@
+prob_27: myalgorithm_jv9[total=24,074,569 z1=1669 z2=96 z3=4554] (695.8s)
+         myalgorithm_jv11[total=24,074,569 z1=1669 z2=96 z3=4554] (694.4s) | lex=tie weighted_delta(A-B)=+0
+prob_38: myalgorithm_jv9[total=37,556,441 z1=2673 z2=2866 z3=6372] (704.5s)
+         myalgorithm_jv11[total=37,556,441 z1=2673 z2=2866 z3=6372] (703.9s) | lex=tie weighted_delta(A-B)=+0
+prob_39: myalgorithm_jv9[total=8,406,071 z1=553 z2=2743 z3=6813] (708.1s)
+         myalgorithm_jv11[total=1,920,819,967 z1=144063 z2=6997 z3=0] (4711.8s) | lex=myalgorithm_jv9 weighted_delta(A-B)=-1,912,413,896
+------------------------------------------------------------------------------------------
+myalgorithm_jv9 total=70,037,081   myalgorithm_jv11 total=1,982,450,977   improvement=-1,912,413,896
+obj1 sums: myalgorithm_jv9=4,895 myalgorithm_jv11=148,405 | lex wins myalgorithm_jv9=1 myalgorithm_jv11=0 ties=2
