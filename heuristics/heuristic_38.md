@@ -117,3 +117,34 @@ Next: same-day v37 controls on the 5 moved cells {21, 22, 29, 25, 40} to
 separate mechanism from lottery before anything is recorded as a v38 row.
 Cells that came back byte-identical (28, 34, 35, 24) need no control —
 identity is self-certifying.
+
+### Bench completion + CONTROL VERDICTS (2026-07-20)
+
+Final two v38 cells: prob_36 = 188,270 (byte-equal), prob_37 = 5,807,047
+(row banked 5,770,494 → +36,553). Note 5,807,047 is EXACTLY the number
+heuristic_37 recorded as v36's honest same-day control for prob_37 — the
+cell the v37 epoch already flagged as the nonreproducible one. Band
+widening k=6 bought nothing there; the session simply landed the honest
+basin. This is a third independent sighting of the same value on that
+cell and reinforces that the v37 row's 5,770,494 is a lucky roll, not a
+reproducible cell.
+
+HARNESS BUG (recorded so it isn't repeated): the control script guarded
+with `while pgrep -f "_v38_verify.py"` — `pgrep` does not match the
+Windows python process list under git-bash, so the guard fell through
+immediately and controls for prob_21/22 ran CONCURRENTLY with the v38
+prob_36/37 runs. Machine-load law violated. Both affected controls are
+still usable (load can only hurt a control, and both reproduced exactly),
+but 29/25/40 controls run clean after the bench drained.
+
+| cell | v37 control (same-day) | v38 | verdict |
+|---|---|---|---|
+| 21 | 1,380,772 (= banked exactly) | 1,355,109 | **−25,663 ATTRIBUTED to 38a** — control reproduces the banked cell to the unit, v38 beats it |
+| 22 | 918,798 (= v38 exactly) | 918,798 | **stale row artifact.** Both versions land 918,798 today; the v37 row's 934,883 is not reproducible. Real gain vs the recorded row, zero mechanism credit |
+| 29, 25, 40 | running clean | | pending |
+
+Standing verdict: 38a's dead-gate fix has ONE hard-attributed win
+(prob_21, −25,663, on a cell no tail had ever touched) plus a recorded-row
+correction on prob_22. The epoch's more durable output is methodological:
+two of the three "wins" a naive read would have banked were row staleness
+or lottery.
