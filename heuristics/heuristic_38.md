@@ -143,7 +143,7 @@ but 29/25/40 controls run clean after the bench drained.
 | 22 | 918,798 (= v38 exactly) | 918,798 | **stale row artifact.** Both versions land 918,798 today; the v37 row's 934,883 is not reproducible. Real gain vs the recorded row, zero mechanism credit |
 | 29 | 557,793 (= v38 exactly) | 557,793 | **NOT a regression.** The row's 557,496 is the stale value; both versions land 557,793 today. v38 does not regress this cell |
 | 25 | 337,655 | 336,988 | **−667 ATTRIBUTED to 38a** (row's 338,322 was itself mildly stale; the honest mechanism gain is −667, not −1,334) |
-| 40 | running clean | 2,299,885 | pending |
+| 40 | 2,299,885 (= v38 exactly) | 2,299,885 | **stale row artifact.** Both versions land 2,299,885 today; the row's 2,300,281 (banked from v36) is not reproducible. Zero mechanism credit |
 
 Standing verdict: 38a's dead-gate fix has ONE hard-attributed win
 (prob_21, −25,663, on a cell no tail had ever touched) plus a recorded-row
@@ -175,3 +175,52 @@ its predecessor by PAIRED SAME-DAY CELL MEASUREMENT on the cells the
 change can touch, never by differencing banked row totals. The row stays
 as a historical record and a submission estimate; it stops being the
 optimization target.
+
+### FINAL ATTRIBUTION (all 5 controls in, 2026-07-20)
+
+prob_25 was measured TWICE by v37 (the continuation script re-ran it) and
+returned 337,655 both times, to the unit — so that control is itself
+reproducible and the −667 attribution is hard.
+
+MECHANISM-ATTRIBUTED TOTAL: **−26,330** (prob_21 −25,663, prob_25 −667).
+Everything else in the row's −6,628 is row-staleness bookkeeping in both
+directions (22 −16,085 and 40 −396 and 29 +297 are all cells where BOTH
+versions produce the identical number today; 37 +36,553 is the known
+lottery cell).
+
+Scorecard of the 5 controls: 1 cell reproduced its banked value exactly
+(21), 4 did not (22, 29, 25, 40). The drift is not a tail phenomenon —
+it hits cells the tail provably never touches.
+
+38a VERDICT: the dead-gate discovery was real and worth fixing (a whole
+class of instances had no access to the only mechanism producing wins
+since v25), but the harvest is ONE meaningful cell. Non-forced champions
+are as tail-resistant as the certified giants. v38 promoted anyway: it is
+a strict superset of v37 (post-race, official-gated, min-wins), and the
+controls confirm zero attributed regressions.
+
+## 38b — SECOND SEEDED RACE (next arm, opened 2026-07-20)
+
+Now the best-supported idea on the board, for a reason this epoch
+produced rather than assumed. The v37 epoch flagged it as "the untested
+legitimate lever"; the drift measurements now QUANTIFY the prize:
+independent same-day rolls of the SAME code differ by 36,553 (prob_37),
+16,085 (prob_22), 667 (prob_25), 396 (prob_40), 297 (prob_29). That
+spread is not noise to be suppressed — under a min-wins accept it is
+free expected gain, and it is the same order of magnitude as everything
+the last five epochs fought for.
+
+Mechanism: after the race and tails, if remaining budget >= ~240s, spawn
+a second worker set with a seed offset, drain its candidates into the
+same list, and let the existing official-checker verify loop pick the
+min. Safe by construction (candidates only ever get ADDED to a min-wins
+pool). Measured idle budget today at 900s: prob_40 620s, prob_24 683s,
+prob_21 700s, prob_25 743s, prob_37 806s — i.e. 100-280s idle on exactly
+the early-returning cells. At contest timelimits (up to ~1800s) the idle
+share is far larger, so this scales the RIGHT way.
+
+Implementation notes for the next iteration: seeds live per-worker inside
+`_run_strategy` (threaded from `wid`); a `seed_off` parameter through
+`_worker_main` -> `_run_strategy` is the minimal change. Gate on
+`remaining >= RACE2_MIN` after tails decline, and respect the 16GB law
+(giants already run 4 workers at ~4GB).
