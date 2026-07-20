@@ -1,0 +1,19 @@
+prob_27: myalgorithm_jv8[total=24,074,569 z1=1669 z2=96 z3=4554] (689.8s)
+         myalgorithm_jv9[total=23,649,558 z1=1628 z2=517 z3=4856] (690.3s) | lex=myalgorithm_jv9 weighted_delta(A-B)=+425,011
+prob_31: myalgorithm_jv8[total=8,265,728 z1=401 z2=3321 z3=10896] (691.7s)
+         myalgorithm_jv9[total=7,884,864 z1=378 z2=2972 z3=10622] (692.9s) | lex=myalgorithm_jv9 weighted_delta(A-B)=+380,864
+prob_33: myalgorithm_jv8[total=7,623,365 z1=1005 z2=1388 z3=6061] (692.5s)
+         myalgorithm_jv9[total=7,623,365 z1=1005 z2=1388 z3=6061] (693.0s) | lex=tie weighted_delta(A-B)=+0
+prob_30: myalgorithm_jv8[total=3,155,729 z1=197 z2=4982 z3=2546] (690.5s)
+         myalgorithm_jv9[total=3,081,819 z1=199 z2=3538 z3=2072] (690.6s) | lex=myalgorithm_jv8 weighted_delta(A-B)=+73,910
+prob_35: myalgorithm_jv8[total=1,343,575 z1=75 z2=1760 z3=2232] (749.2s)
+         myalgorithm_jv9[total=1,343,575 z1=75 z2=1760 z3=2232] (748.9s) | lex=tie weighted_delta(A-B)=+0
+prob_28: myalgorithm_jv8[total=3,501,009 z1=195 z2=858 z3=2995] (748.1s)
+         myalgorithm_jv9[total=3,501,009 z1=195 z2=858 z3=2995] (748.1s) | lex=tie weighted_delta(A-B)=+0
+prob_26: myalgorithm_jv8[total=8,093,323 z1=545 z2=1484 z3=5443] (692.4s)
+         myalgorithm_jv9[total=7,908,663 z1=534 z2=2463 z3=5144] (694.0s) | lex=myalgorithm_jv9 weighted_delta(A-B)=+184,660
+prob_38: myalgorithm_jv8[total=36,756,532 z1=2598 z2=2399 z3=7042] (702.2s)
+         myalgorithm_jv9[total=36,756,532 z1=2598 z2=2399 z3=7042] (702.3s) | lex=tie weighted_delta(A-B)=+0
+------------------------------------------------------------------------------------------
+myalgorithm_jv8 total=92,813,830   myalgorithm_jv9 total=91,749,385   improvement=+1,064,445
+obj1 sums: myalgorithm_jv8=6,685 myalgorithm_jv9=6,612 | lex wins myalgorithm_jv8=1 myalgorithm_jv9=3 ties=4
