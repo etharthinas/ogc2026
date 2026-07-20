@@ -75,3 +75,30 @@ reconverges). **<120M is foreclosed with high confidence; the earlier "room is
 real" was a loose-bound artifact. Recommendation shifts to accept jv9 /
 renegotiate, NOT the nester moonshot.** Deliverable: jv9, single-shot
 122,728,934 (-2.4% vs jv6), with a rigorous measured impossibility result.
+
+## Preference (Z3) lever investigated & closed (2026-07-21)
+The campaign was Z1-tunnel-visioned; audited the objective breakdown of the
+full-40 single-shot: **w1*Z1=101.3M (83%), w2*Z2=0.44M (0%), w3*Z3=20.9M
+(17%)**. The 20.9M preference penalty was untouched -- and the repack gate
+`if best_tardy>0` (line 2471) means preference recovery NEVER fires on zero/
+low-tardiness cells (prob_22: Z1=0 yet Z3=866k). Looked like a big open lever.
+CLOSED as structurally forced:
+- prob_22: 81/100 blocks prefer the SMALL bay0 (cap 1440) demanding 7793
+  workload = 5.4x capacity. `_z3_relocate` on the solution recovered ZERO
+  (every move budget<=0: relocating into the oversubscribed preferred bay
+  spikes the w2 imbalance penalty past the w3 gain).
+- EVERY big-Z3 cell is preference-oversubscribed 2x-33x (31: 33.6x, 27: 9.8x,
+  37: 9.0x, 38: 7.0x, 34: all 4 bays 2.4-3.8x). Blocks collectively demand
+  their preferred bays far beyond capacity -> the penalty is instance-designed-
+  in and forced. The heuristic already recovers the small reducible part
+  (bay_score w3 term + z3_relocate on giants).
+
+## FINAL: both loss components structurally forced -> <120M foreclosed
+- Z1 (83%): 2D irregular-tiling-forced (whole-bay exact-pack = zero yield on 39).
+- Z3 (17%): preference-capacity-oversubscription-forced (every cell 2-33x).
+The area lower bound (Z1 loose) and aggregate Z3 bound are both loose because
+they ignore the REAL binding constraints (tiling / temporal peaks). Every
+tractable lever across jv7-jv14 + this preference audit is exhausted. jv9
+(single-shot 122,728,934, -2.4% vs jv6) is the deliverable; <120M requires a
+fundamentally different solver with low odds (exact methods already find
+nothing in-neighborhood).
