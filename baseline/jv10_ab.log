@@ -1,0 +1,23 @@
+prob_27: myalgorithm_jv9[total=23,649,558 z1=1628 z2=517 z3=4856] (690.4s)
+         myalgorithm_jv10[total=24,074,569 z1=1669 z2=96 z3=4554] (689.9s) | lex=myalgorithm_jv9 weighted_delta(A-B)=-425,011
+prob_37: myalgorithm_jv9[total=5,699,640 z1=916 z2=2853 z3=4392] (700.9s)
+         myalgorithm_jv10[total=5,807,047 z1=899 z2=2620 z3=4667] (701.1s) | lex=myalgorithm_jv10 weighted_delta(A-B)=-107,407
+prob_31: myalgorithm_jv9[total=3,708,392,930 z1=278123 z2=59657 z3=0] (7787.4s)
+         myalgorithm_jv10[total=8,825,086 z1=448 z2=4564 z3=10630] (704.6s) | lex=myalgorithm_jv10 weighted_delta(A-B)=+3,699,567,844
+prob_26: myalgorithm_jv9[total=7,908,663 z1=534 z2=2463 z3=5144] (705.4s)
+         myalgorithm_jv10[total=8,199,987 z1=553 z2=1484 z3=5443] (699.7s) | lex=myalgorithm_jv9 weighted_delta(A-B)=-291,324
+prob_33: myalgorithm_jv9[total=7,869,639 z1=1047 z2=309 z3=5908] (705.1s)
+         myalgorithm_jv10[total=7,589,514 z1=1012 z2=1496 z3=5517] (704.8s) | lex=myalgorithm_jv10 weighted_delta(A-B)=+280,125
+prob_30: myalgorithm_jv9[total=3,356,065 z1=209 z2=4867 z3=2750] (690.0s)
+         myalgorithm_jv10[total=3,155,729 z1=197 z2=4982 z3=2546] (691.2s) | lex=myalgorithm_jv10 weighted_delta(A-B)=+200,336
+prob_23: myalgorithm_jv9[total=2,494,797 z1=157 z2=862 z3=1800] (689.8s)
+         myalgorithm_jv10[total=2,494,797 z1=157 z2=862 z3=1800] (689.6s) | lex=tie weighted_delta(A-B)=+0
+prob_22: myalgorithm_jv9[total=897,767 z1=0 z2=2189 z3=2228] (748.4s)
+         myalgorithm_jv10[total=897,767 z1=0 z2=2189 z3=2228] (748.1s) | lex=tie weighted_delta(A-B)=+0
+prob_24: myalgorithm_jv9[total=559,336 z1=7 z2=1941 z3=1521] (748.0s)
+         myalgorithm_jv10[total=578,751 z1=7 z2=1984 z3=1585] (748.1s) | lex=myalgorithm_jv9 weighted_delta(A-B)=-19,415
+prob_25: myalgorithm_jv9[total=308,502 z1=388 z2=2226 z3=2374] (690.8s)
+         myalgorithm_jv10[total=35,458,332 z1=53151 z2=6615 z3=0] (1137.4s) | lex=myalgorithm_jv9 weighted_delta(A-B)=-35,149,830
+------------------------------------------------------------------------------------------
+myalgorithm_jv9 total=3,761,136,897   myalgorithm_jv10 total=97,081,579   improvement=+3,664,055,318
+obj1 sums: myalgorithm_jv9=283,009 myalgorithm_jv10=58,093 | lex wins myalgorithm_jv9=4 myalgorithm_jv10=4 ties=2
