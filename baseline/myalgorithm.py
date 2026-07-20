@@ -6492,15 +6492,20 @@ def _tail37_order(prob_info, champ_assign, bays, bay_u, w1, w2, w3,
         return None
     blocks_data = prob_info["blocks"]
     if not forced:
-        if w1 < 6000:
-            return None
+        # v38: w1 gate dropped -- measured evidence (prob_37 w1=3333: 12
+        # reachable units vs prob_33 w1=6667: 1) says low-w1 instances hold
+        # MORE order units, not fewer. Tardy-present + budget gates suffice;
+        # min-wins accept protects quality.
         if not any(a["exit_time"] > blocks_data[bi]["due_date"]
                    for bi, a in champ_assign.items()):
             return None
 
     base_obj_off = res["objective"]        # champion official objective
     working = {bi: dict(a) for bi, a in champ_assign.items()}
-    bands = _t37_pick_bands(working, blocks_data)
+    # v38: k=2 -> k=6. Offline mid-tier sweeps needed 3 accepted bands on
+    # prob_37; forced giants leave ~250s of overflow idle after 2 bands. The
+    # per-band budget share below already deadline-guards extra bands.
+    bands = _t37_pick_bands(working, blocks_data, k=6)
     if not bands:
         return None
 
@@ -6807,9 +6812,30 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
                     w_obj, t_start, timelimit, _overflow)   # v36: overflow knob
             except Exception:
                 final_assign = assign
+            # v38 NON-FORCED ORDER-TAIL CALL SITE. _tail37_order always had a
+            # non-forced gate but no non-forced caller -- the 8 non-forced
+            # cells in 21-40 (~10.6M mass) never saw the order tail. Runs on
+            # the POST-merge champion; a fresh official check is the min-wins
+            # base; on None (or any failure) the pre-v38 return is unchanged.
             if final_assign is assign:
-                return sol
-            return {"operations": _build_operations(final_assign)}
+                t37_base_sol, t37_base_res = sol, res
+            else:
+                t37_base_sol = {"operations": _build_operations(final_assign)}
+                try:
+                    t37_base_res = check_feasibility(prob_info, t37_base_sol)
+                except Exception:
+                    t37_base_res = None
+                if not (t37_base_res and t37_base_res.get("feasible")):
+                    return t37_base_sol
+            try:
+                t37_sol = _tail37_order(
+                    prob_info, final_assign, bays, bay_u, w1, w2, w3,
+                    t_start, timelimit, _forced, t37_base_res)
+                if t37_sol is not None:
+                    return t37_sol
+            except Exception:
+                pass
+            return t37_base_sol
     # Last resort: empty-bay (structurally feasible).
     return {"operations": _build_operations(fallback)}
 
