@@ -84,11 +84,36 @@ memory hogs; bash wrapper externally killed mid-run after 7 cells)
 | 21 | 1,380,772 | 1,355,109 | **−25,663** | biggest 38a win; first tail contact ever on this cell |
 | 35 | 1,346,898 | 1,346,898 | 0 | byte-equal |
 | 22 | 918,798 | 918,798 | 0 | obj1=0 → tail correctly gated out |
-| 24 | (running when wrapper killed) | | | orphaned python completing solo |
+| 24 | 643,943 | 643,943 | 0 | byte-equal |
+| 22 | 934,883 | 918,798 | **−16,085** | obj1=0 → TAIL GATED OUT (see below) |
+| 29 | 557,496 | 557,793 | **+297** | obj1=0 → TAIL GATED OUT (see below) |
+| 25 | 338,322 | 336,988 | **−1,334** | forced, first v37-tail measurement |
+| 36, 37 | | | | still running |
 
-Interim verdict: the dead-gate discovery is REAL but the harvest is thin —
-non-forced champion basins are mostly tail-resistant like the giants
-(4 byte-identities, 2 wins). Verified so far: **−26,059**. Regression
-guard holds: no cell measured worse than banked (min-wins works as
-designed). Remaining unmeasured: 29, 25, 36 (low mass, ~1.1M combined)
-and 37 (band-widening k=6 bonus check).
+(Correction: an earlier interim note compared prob_22 against the
+"algorithm 33 final" row instead of the v37 row. Numbers above are all
+vs the v37 row.)
+
+Raw net over the 9 measured cells: **−43,181**.
+
+### THE ATTRIBUTION PROBLEM (2026-07-20) — non-forced cells are NOT
+deterministic, and the two biggest swings are unattributed
+
+prob_22 (−16,085) and prob_29 (+297) BOTH have obj1 = 0, so the order
+tail's tardy-present gate refuses them: **the 38a mechanism never ran on
+either cell**. Their deltas are therefore pure session-lottery variance,
+not mechanism. This falsifies the epoch-open assumption that "non-forced
+cells are historically byte-deterministic → any strict improvement is
+bankable". It also means prob_21's −25,663 (obj1=73, tail COULD have
+fired) is not yet attributable either — it needs a same-day v37 control,
+exactly as the v36 prob_37 nonreproducible-cell episode taught.
+
+LAW (extends the v37 reproducibility discovery): session-state basin
+sensitivity is NOT confined to forced instances. Non-forced cells with a
+merge tail swing too. Cross-version cell comparison requires a same-day
+control on ANY cell that moved, forced or not.
+
+Next: same-day v37 controls on the 5 moved cells {21, 22, 29, 25, 40} to
+separate mechanism from lottery before anything is recorded as a v38 row.
+Cells that came back byte-identical (28, 34, 35, 24) need no control —
+identity is self-certifying.
