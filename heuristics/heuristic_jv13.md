@@ -44,3 +44,16 @@ composed 121,468,412 / honest single-shot 122,728,934, a real −2.4% over jv6
 (124.48M), plus a complete measured impossibility proof across 7 lever families
 (capacity being the sole winner). Closing the remaining −2.7M needs a non-
 polish solver (multi-day, low odds) — a user decision.
+
+## Post-hoc packing-lever checks (2026-07-21, grounded in lb_analysis)
+- **Orientation dedup (jv14, discarded no-op):** hypothesis was that
+  `_unique_orients` bbox-dedup discarded shape-distinct orientations (a
+  fragmentation source). MEASURED MOOT: on 39/37/38/27 the blocks rotate at
+  non-90° angles so all ~8 orientations have distinct bboxes already
+  (bbox-unique 7.99/8, shape-dedup recovers 0 extra). The construction already
+  explores every orientation. Fragmentation is a GLOBAL placement property, not
+  orientation choice.
+- Combined with the campaign's dead exact-pack (windows + whole-bay = optimal
+  LOCAL placement, measured zero), the tractable packing levers are exhausted.
+  The 39/37 packing gap (their tardiness is 100% nesting fragmentation) needs a
+  GLOBAL irregular nester (No-Fit-Polygon class) = the multi-day moonshot.
