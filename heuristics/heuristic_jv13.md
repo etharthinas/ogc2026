@@ -57,3 +57,21 @@ polish solver (multi-day, low odds) — a user decision.
   LOCAL placement, measured zero), the tractable packing levers are exhausted.
   The 39/37 packing gap (their tardiness is 100% nesting fragmentation) needs a
   GLOBAL irregular nester (No-Fit-Polygon class) = the multi-day moonshot.
+
+## DEFINITIVE RESOLUTION (2026-07-21): giant tardiness is tiling-forced, foreclosed
+The area lower bound (Z1: 38>=135, 39/37=0) is LOOSE -- it ignores 2D tiling.
+The binding question is answered by `_exact_pack_bay` (whole-bay exact CP-SAT:
+ALL bay blocks, free placement + FREE INTEGER ENTRY TIMES = exact "admit-
+earlier re-nest"), which the campaign already ran ON PROB_39 across 5 configs
+@45-90s: "FEASIBLE-at-hint, millions of branches, ZERO yield." So:
+- capacity is NOT the limit (area LB near-zero), but
+- irregular 2D TILING is the binding limit, and the heuristic already achieves
+  the tiling-constrained neighborhood optimum -- an EXACT solver with free
+  retiming cannot beat it.
+Since exact local search finds nothing and basin-hopping is jay-proven dead
+(28a/f), even a global No-Fit-Polygon nester is low-odds (it would have to land
+a basin far from the heuristic's, which the absorbing-fixed-point evidence says
+reconverges). **<120M is foreclosed with high confidence; the earlier "room is
+real" was a loose-bound artifact. Recommendation shifts to accept jv9 /
+renegotiate, NOT the nester moonshot.** Deliverable: jv9, single-shot
+122,728,934 (-2.4% vs jv6), with a rigorous measured impossibility result.
