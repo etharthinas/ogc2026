@@ -141,10 +141,37 @@ but 29/25/40 controls run clean after the bench drained.
 |---|---|---|---|
 | 21 | 1,380,772 (= banked exactly) | 1,355,109 | **−25,663 ATTRIBUTED to 38a** — control reproduces the banked cell to the unit, v38 beats it |
 | 22 | 918,798 (= v38 exactly) | 918,798 | **stale row artifact.** Both versions land 918,798 today; the v37 row's 934,883 is not reproducible. Real gain vs the recorded row, zero mechanism credit |
-| 29, 25, 40 | running clean | | pending |
+| 29 | 557,793 (= v38 exactly) | 557,793 | **NOT a regression.** The row's 557,496 is the stale value; both versions land 557,793 today. v38 does not regress this cell |
+| 25 | 337,655 | 336,988 | **−667 ATTRIBUTED to 38a** (row's 338,322 was itself mildly stale; the honest mechanism gain is −667, not −1,334) |
+| 40 | running clean | 2,299,885 | pending |
 
 Standing verdict: 38a's dead-gate fix has ONE hard-attributed win
 (prob_21, −25,663, on a cell no tail had ever touched) plus a recorded-row
 correction on prob_22. The epoch's more durable output is methodological:
 two of the three "wins" a naive read would have banked were row staleness
 or lottery.
+
+### ATTRIBUTION SUMMARY (4 of 5 controls in)
+
+Mechanism-attributed (v38 beats a same-day v37 control on the same cell):
+- prob_21 **−25,663** (control reproduced the banked cell to the unit)
+- prob_25 **−667**
+Non-regressions confirmed by control: prob_29 (row was stale, not a v38 loss).
+Row-staleness corrections, zero mechanism credit: prob_22 (−16,085 vs row),
+prob_29 (+297 vs row), prob_25 (−667 of its −1,334).
+
+THE DOMINANT FINDING OF THIS EPOCH IS THAT THE RECORDED ROW IS DRIFTING.
+Four of the five controlled cells disagreed with their banked values
+(21 agreed exactly; 22, 29, 25 and the known 37 did not). The v37 row is
+a mosaic of cells banked across different sessions, and session-state
+basin variance means a growing fraction of them are unreproducible. The
+row total is therefore NOT a reliable measure of version quality at the
+~50k scale -- which is precisely the scale at which recent epochs have
+been fighting. Reported epoch gains of that magnitude since ~v33 should
+be treated as partly session artifacts unless controlled.
+
+METHOD CHANGE PROPOSED FOR ALL FUTURE EPOCHS: a version is compared to
+its predecessor by PAIRED SAME-DAY CELL MEASUREMENT on the cells the
+change can touch, never by differencing banked row totals. The row stays
+as a historical record and a submission estimate; it stops being the
+optimization target.
