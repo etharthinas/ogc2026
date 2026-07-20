@@ -1,0 +1,46 @@
+# jv13 — giant solo (island broadcast off on giants) — DEAD
+
+Base: jv9. Motivated by jv12's diagnosis: the 8 giant workers CONVERGE to one
+basin per run (best5 identical) because the island broadcast makes them adopt
+the first-good leader. Hypothesis: convergence makes the portfolio UNDER-
+explore; suppress the broadcast on giants so 8 workers explore INDEPENDENT
+basins to completion, min-wins → maybe find a basin BELOW the converged best,
+not just reduce the 27 ±425k variance.
+
+Build: parent skips `for ib in inboxes: ib.put(item)` when `_giant_solo`
+(forced n≥250 + OGC_GIANT_SOLO!=0). Non-giants byte-identical.
+
+## Probe (OGC_DEBUG, 27 @750s)
+`prob_27 = 23,560,982` (obj1=1610) — BELOW the best-observed 23,649,558 by
+−88,576. Looked like a genuine new basin (under-exploration confirmed?).
+
+## A/B vs jv9 @750s {27,38,39}: DEAD (net −26,666) — NOT PROMOTED
+| cell | jv9 | jv13 | delta |
+|---|---|---|---|
+| 27 | 23,649,558 | 23,649,558 | TIE — the probe's 23.56M was draw NOISE (27's real range 23.56–24.07M); the winning draw comes from an independent-builder worker (wid0 reclaim) both arms produce identically, so broadcast-suppression didn't change it |
+| 38 | 36,756,532 | 36,783,198 | **+26,666 REGRESS** — the rigid giant's basin depends on convergence: the repack-follower workers need the leader to hold the hard-won 38 basin; independence loses it |
+| 39 | 8,406,071 | 8,406,071 | TIE |
+
+**Verdict: giant-solo neutral-to-negative. The under-exploration hypothesis is
+REFUTED: independence does not systematically find lower giant basins, and it
+hurts the rigid 38. NOT promoted; myalgorithm.py stays jv9.**
+
+## Campaign-final (definitive)
+Post-capacity within-run levers, ALL measured dead on giants:
+- jv10 racer/2nd-deaf — displacement regress
+- jv11 W0-reclaim replica — neutral + hang bug
+- jv12 giant merge-tail — neutral (intra-run convergence, nothing to recombine)
+- jv13 giant solo/independence — neutral + 38 regress
+
+Five distinct within-run mechanisms, five dead. The giants are a genuine
+absorbing fixed point: their value is set by the instance + the collective
+basin the portfolio lands in, and no within-run manipulation (recombination,
+independence, replicas, reconfiguration) moves it below the best between-run
+draw. Only BETWEEN-RUN draw multiplication (capacity, jv7–jv9) helped, and it
+is core-saturated at nw=8.
+
+**<120M is foreclosed under construct→polish→merge.** Deliverable: jv9 —
+composed 121,468,412 / honest single-shot 122,728,934, a real −2.4% over jv6
+(124.48M), plus a complete measured impossibility proof across 7 lever families
+(capacity being the sole winner). Closing the remaining −2.7M needs a non-
+polish solver (multi-day, low odds) — a user decision.
