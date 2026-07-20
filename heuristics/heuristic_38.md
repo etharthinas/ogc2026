@@ -73,4 +73,22 @@ Kill: raw single-worker build never beats the stock analogue on both giants.
 
 ## Results
 
-(pending)
+### 38a spot bench (2026-07-20, @900s serial; machine 17% load, no foreign
+memory hogs; bash wrapper externally killed mid-run after 7 cells)
+
+| cell | banked (v37 row) | v38 measured | delta | note |
+|---|---|---|---|---|
+| 28 | 3,565,230 | 3,565,230 | 0 | tail ran (obj1=198 units), no wins — coverage certified |
+| 40 | 2,300,281 | 2,299,885 | **−396** | first-ever v37-tail measurement (was banked from v36) |
+| 34 | 1,978,590 | 1,978,590 | 0 | byte-equal |
+| 21 | 1,380,772 | 1,355,109 | **−25,663** | biggest 38a win; first tail contact ever on this cell |
+| 35 | 1,346,898 | 1,346,898 | 0 | byte-equal |
+| 22 | 918,798 | 918,798 | 0 | obj1=0 → tail correctly gated out |
+| 24 | (running when wrapper killed) | | | orphaned python completing solo |
+
+Interim verdict: the dead-gate discovery is REAL but the harvest is thin —
+non-forced champion basins are mostly tail-resistant like the giants
+(4 byte-identities, 2 wins). Verified so far: **−26,059**. Regression
+guard holds: no cell measured worse than banked (min-wins works as
+designed). Remaining unmeasured: 29, 25, 36 (low mass, ~1.1M combined)
+and 37 (band-widening k=6 bonus check).
