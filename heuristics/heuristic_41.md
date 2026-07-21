@@ -56,3 +56,16 @@ cells need re-measurement if v42 is promoted (no banking).
 
 Measurement: v42 vs v41 paired @1800 on {38, 27, 26} (38/27 have deterministic basins
 today: 36,322,548 / 23,560,982 — attribution is clean).
+
+## v42 RESULT (2026-07-21): FLAT — depth-scaling family dead
+
+All three paired cells byte-identical to v41: prob_38 36,322,548 / prob_27 23,560,982 /
+prob_26 7,721,350. Deep xpack shots, wider joint-repack radius, and 64/48 repair caps all
+converge to the same optimum. v42 NOT promoted (kept in tree for provenance).
+
+Accumulated fixed-point evidence on the giants: tails ≈0, merge-on-forced 0, depth
+scaling 0, seed replicas 0 (jv8/9 measured), re-pacing lottery ±14k — the ONLY lever that
+has ever moved prob_38/27 is total wall-clock into the same deterministic W0-reclaim
+pipeline (−1.87M / −0.51M per 900→1800 doubling). Hence the v43 question: is the pipeline
+compute-starved (slope persists at 3600s → speed engineering pays) or density-saturated
+(slope collapses → <115M needs a new packing paradigm)? 3600s probe running.
