@@ -69,3 +69,20 @@ has ever moved prob_38/27 is total wall-clock into the same deterministic W0-rec
 pipeline (−1.87M / −0.51M per 900→1800 doubling). Hence the v43 question: is the pipeline
 compute-starved (slope persists at 3600s → speed engineering pays) or density-saturated
 (slope collapses → <115M needs a new packing paradigm)? 3600s probe running.
+
+## 3600s probe RESULT: memory collapse — 1800s is this machine's ceiling
+
+prob_38 @3600 returned **3,729,926,244 (the empty-bay fallback) in 4110s**: at ~1h of
+search, 8 workers × per-process geometry caches (_BLK_CAP 250k / _CACHE_CAP 2.5M) exhaust
+the 8GB mac, workers die, queue drains empty, parent falls back; under swap-thrash even
+v41's deadline guards can't hold (frozen process). prob_27 arm killed. Consequences:
+- 1800s serial is the practical per-cell ceiling on this hardware; the compute-scaling
+  question beyond one octave is unanswerable here (eval server: 16GB/4 cores → nw=4,
+  half the memory pressure — 1800s is safe there; 3600s untested anywhere).
+- Session verdict: **row 120,123,174 (v41) stands.** Gap to <115M = 5.12M, located
+  entirely in prob_38/27 packing density; every implemented heuristic family measured at
+  a fixed point; compute lever exhausted at this machine's memory ceiling. Next real
+  options are engineering-scale: (a) memory-bounded caches + speed work (numba is in the
+  contest env) to buy compute octaves safely, (b) a qualitatively better packing
+  paradigm (true no-fit-polygon placement, column generation over placement menus) on
+  the giants — both multi-session efforts.
