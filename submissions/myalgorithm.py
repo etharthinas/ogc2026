@@ -1,3 +1,12 @@
+# myalgorithm_41.py -- v41 = v40 + HARD RETURN-BY-DEADLINE GUARANTEE. Every
+# post-race tail stage (merge pool build/recombine/replay, tail35 pair loop,
+# t37 pool build + per-round realize/verify, and every caller-side official
+# check) is now bounded by the true deadline, with reserves scaled by the
+# MEASURED check_feasibility cost (cf_cost) so half-speed machines cannot
+# overrun (v40 defect: prob_26 @1800s returned at 2104s). Fast-path (~0.15s
+# cf) constants are unchanged. See heuristics/heuristic_41 notes.
+# ---------------------------------------------------------------------------
+# (v40 header, kept verbatim)
 # myalgorithm_40.py -- v40 = v39 + 39b MERGE-ON-FORCED (recombine pool on giants
 # before tail35/t37). See heuristics/heuristic_40.md.
 # ---------------------------------------------------------------------------
@@ -5812,15 +5821,20 @@ def _merge_precompute_pairs(raster, bays, blocks_data, pool, deadline):
 
 
 def _merge_recombine(prob_info, bays, bay_u, w1, w2, w3, pool, incompat_pairs,
-                     warm_assign, budget_s):
+                     warm_assign, budget_s, abs_end=None):
     """Pick one placement per block minimizing the true objective subject to the
     pairwise incompatibilities; warm-started from warm_assign. Returns a merged
-    assignment dict or None."""
+    assignment dict or None. v41: `abs_end` is an absolute wall-clock cutoff --
+    the Python model BUILD is periodically checked against it (build time used
+    to silently extend the solve past the caller's budget) and the solver cap
+    is recomputed from it IMMEDIATELY before Solve."""
     try:
         from ortools.sat.python import cp_model
     except Exception:
         return None
     if budget_s <= 0.5:
+        return None
+    if abs_end is not None and abs_end - time.time() < 1.0:
         return None
     blocks_data = prob_info["blocks"]
     n_bays = len(bays)
@@ -5830,7 +5844,12 @@ def _merge_recombine(prob_info, bays, bay_u, w1, w2, w3, pool, incompat_pairs,
     base_cost = {}
     wl_terms = [[] for _ in range(n_bays)]
     su = [int(round(SU * bay_u[j])) for j in range(n_bays)]
+    _nb_built = 0
     for bi, plist in pool.items():
+        _nb_built += 1
+        if (abs_end is not None and (_nb_built & 31) == 0
+                and time.time() > abs_end):
+            return None                       # v41: build blew the window
         vs = []
         blk = blocks_data[bi]
         due = blk["due_date"]
@@ -5885,7 +5904,14 @@ def _merge_recombine(prob_info, bays, bay_u, w1, w2, w3, pool, incompat_pairs,
                 for pp in range(len(pool[bi])):
                     m.AddHint(yv[(bi, pp)], 1 if pp == pidx else 0)
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = float(budget_s)
+    # v41: recompute the cap NOW -- `budget_s` was measured before the Python
+    # model build above, whose cost used to extend the solve past the window.
+    _cap_s = float(budget_s)
+    if abs_end is not None:
+        _cap_s = min(_cap_s, abs_end - time.time())
+        if _cap_s < 0.5:
+            return None
+    solver.parameters.max_time_in_seconds = _cap_s
     # jv7: the merge recombine runs in the PARENT after every worker has been
     # reaped -- the whole machine is idle. Give CP-SAT all cores (was 4): the
     # merge tail is the only measured positive-yield family (-383,875), so
@@ -5917,11 +5943,16 @@ def _merge_recombine(prob_info, bays, bay_u, w1, w2, w3, pool, incompat_pairs,
     return merged
 
 
-def _merge_repair_replay(prob_info, merged, warm_assign, rounds=3):
+def _merge_repair_replay(prob_info, merged, warm_assign, rounds=3,
+                         deadline=None):
     """Rebuild ops + check_feasibility; per violating block revert to its
-    warm-start placement. Up to `rounds` passes. Returns (assign, feasible)."""
+    warm-start placement. Up to `rounds` passes. Returns (assign, feasible).
+    v41: `deadline` aborts further rounds -- each round is a full official
+    check_feasibility replay (seconds on n>=200), previously unbounded."""
     cur = {bi: dict(a) for bi, a in merged.items()}
     for _ in range(rounds + 1):
+        if deadline is not None and time.time() > deadline:
+            return cur, False
         try:
             res = check_feasibility(
                 prob_info, {"operations": _build_operations(cur)})
@@ -5942,6 +5973,8 @@ def _merge_repair_replay(prob_info, merged, warm_assign, rounds=3):
                 reverted = True
         if not reverted:
             return cur, False
+    if deadline is not None and time.time() > deadline:
+        return cur, False
     try:
         res = check_feasibility(
             prob_info, {"operations": _build_operations(cur)})
@@ -5952,7 +5985,7 @@ def _merge_repair_replay(prob_info, merged, warm_assign, rounds=3):
 
 def _merge_tail(prob_info, bays, bay_u, w1, w2, w3, cands, winner_assign,
                 winner_obj, t_start, timelimit, overflow=False,
-                allow_forced=False):
+                allow_forced=False, cf_cost=1.0):
     """Post-race self-gating merge. Returns an improved feasible assignment if
     the gate fires AND the merge strictly beats the winner (official-verified);
     otherwise returns winner_assign unchanged (byte-identical v25 path)."""
@@ -6023,8 +6056,20 @@ def _merge_tail(prob_info, bays, bay_u, w1, w2, w3, cands, winner_assign,
         # CP-SAT budget = remaining - 2.5s safety (covers precompute + replay
         # repair + final official verify). merge_hard_stop bakes the 2.5s in, so
         # the solve deadline never blows the parent's abs_stop.
-        safety = 2.5
+        # v41: the post-solve chain (repair replay <=5x official check + final
+        # verify) was UNBOUNDED past merge_hard_stop -- the prob_26 @1800s
+        # +304s overrun class. Reserve room for the replay rounds + the final
+        # verify out of the same absolute window, sized by the measured
+        # check_feasibility cost `cf_cost` threaded in by the caller.
+        # reserve = the worst-case post-solve chain: replay repair (<=5 official
+        # checks) + 1 final verify ~= 6x cf_cost. On the design machine cf ~0.15s
+        # -> 6x = 0.9s < 2.5s, so the old 2.5s constant stands (byte-identical);
+        # on a slow machine the reserve grows with the MEASURED verify cost.
+        safety = max(2.5, 6.0 * cf_cost)
         merge_hard_stop = t_start + timelimit - safety
+        if merge_hard_stop - time.time() < 1.0:
+            _emit(True, 0.0)
+            return winner_assign
         raster = _Raster(prob_info, bays)
         pre_deadline = min(merge_hard_stop - 1.0,
                            time.time() + max(1.5, (merge_hard_stop - time.time()) * 0.45))
@@ -6032,14 +6077,19 @@ def _merge_tail(prob_info, bays, bay_u, w1, w2, w3, cands, winner_assign,
             raster, bays, blocks_data, pool, pre_deadline)
         solve_budget = merge_hard_stop - time.time()
         merged = _merge_recombine(prob_info, bays, bay_u, w1, w2, w3, pool,
-                                  incompat, winner_assign, solve_budget)
+                                  incompat, winner_assign, solve_budget,
+                                  abs_end=merge_hard_stop)
         if merged is not None:
+            _cf = max(0.3, cf_cost)
+            replay_dl = t_start + timelimit - _cf - 0.5
             repaired, feasible = _merge_repair_replay(
-                prob_info, merged, winner_assign, rounds=3)
+                prob_info, merged, winner_assign, rounds=3,
+                deadline=replay_dl)
             if feasible:
                 mobj = _objective(repaired, blocks_data, bays,
                                   bay_u, w1, w2, w3)[0]
-                if mobj < winner_obj - 1e-9:
+                if (mobj < winner_obj - 1e-9
+                        and time.time() < t_start + timelimit - _cf - 0.3):
                     if check_feasibility(
                             prob_info,
                             {"operations": _build_operations(repaired)}
@@ -6197,6 +6247,7 @@ def _tail35_cpsat(prob_info, champ_assign, bays, bay_u, w1, w2, w3, deadline,
 
     # pairwise incompat: TIME-OVERLAPPING movable pairs, SAME-bay candidate
     # pairs only (cross-bay pairs never interact -> skipped).
+    _pchk = 0
     for ii in range(len(movable)):
         if time.time() > build_stop:               # TIME GUARD (pair loop)
             return None, len(movable), cands_avg, 0
@@ -6206,6 +6257,12 @@ def _tail35_cpsat(prob_info, champ_assign, bays, bay_u, w1, w2, w3, deadline,
             if not _tov(ai["entry_time"], ai["exit_time"],
                         aj["entry_time"], aj["exit_time"]):
                 continue
+            # v41: guard INSIDE the jj loop too -- one outer ii covers up to
+            # MOV_CAP*CAND_CAP^2 geometry checks (~48k on overflow), which on a
+            # half-speed machine can burn tens of seconds between outer checks.
+            _pchk += 1
+            if (_pchk & 15) == 0 and time.time() > build_stop:
+                return None, len(movable), cands_avg, 0
             for a_idx, pa in enumerate(pool[bi]):
                 pbay = pa["bay"]
                 for b_idx, pb in enumerate(pool[bj]):
@@ -6378,10 +6435,13 @@ def _t37_entry_choices(a, blk):
 
 
 def _t37_build_pool(base_assign, blocks_data, bays, raster, window_ids,
-                    fixed_ids, cand_cap, per_bay_anchors):
+                    fixed_ids, cand_cap, per_bay_anchors, deadline=None):
     """One combined-candidate pool per window block; each candidate is exact-
     gated feasible vs the FROZEN schedule (block_id tie-break). base candidate
-    is index 0. Cross-bay allowed."""
+    is index 0. Cross-bay allowed. v41: `deadline` aborts the build (returns
+    None) -- this loop (<=110 blocks x raster scans x <=32 exact gates) had NO
+    time guard and was the dominant per-band overrun (~50-80s/band on a
+    half-speed machine; the prob_26 @1800s +304s class)."""
     n_bays = len(bays)
     fixed_by_bay = [[] for _ in range(n_bays)]
     for bi in fixed_ids:
@@ -6391,6 +6451,8 @@ def _t37_build_pool(base_assign, blocks_data, bays, raster, window_ids,
 
     pool = {}
     for bi in window_ids:
+        if deadline is not None and time.time() > deadline:
+            return None                            # v41: band skipped cleanly
         a = base_assign[bi]
         blk = blocks_data[bi]
         proc = a["exit_time"] - a["entry_time"]
@@ -6813,7 +6875,10 @@ def _t37_build_band(prob, base, bays, bay_u, raster, t1, t2, win_cap,
     fixed_ids = [bi for bi in base if bi not in win_set]
     pool = _t37_build_pool(base, bd, bays, raster, window_ids, fixed_ids,
                            cand_cap=_T37_PRESENCE_CAND_CAP,
-                           per_bay_anchors=_T37_PRESENCE_ANCHORS)
+                           per_bay_anchors=_T37_PRESENCE_ANCHORS,
+                           deadline=build_deadline)   # v41: pool build guarded
+    if pool is None:
+        return None, None, window_ids
     mdl = _T37Model(prob, base, window_ids, fixed_ids, pool, bays, bay_u, raster)
     mdl.build(build_deadline=build_deadline)
     return mdl, pool, window_ids
@@ -6843,6 +6908,10 @@ def _t37_solve_model(prob, base, mdl, pool, window_ids, bays, bay_u, budget_s,
                                                           min(budget_s, left)))
         st = solver.Solve(mdl.m)
         if st not in (_cp_model.OPTIMAL, _cp_model.FEASIBLE):
+            return None, 0.0
+        # v41: the realize + official check below cost O(cf) each round and
+        # were unguarded -- past the hard deadline, discard instead of verify.
+        if time.time() > hard_deadline:
             return None, 0.0
         new_assign = {bi: dict(a) for bi, a in base.items()}
         sel = {}
@@ -6924,7 +6993,7 @@ def _t37_pick_bands(base, blocks_data, w=_T37_BAND_W, k=2):
 
 
 def _tail37_order(prob_info, champ_assign, bays, bay_u, w1, w2, w3,
-                  t_start, timelimit, forced, res):
+                  t_start, timelimit, forced, res, cf_cost=1.0):
     """v37 order-aware presence-window CP-SAT tail. Runs AFTER the existing
     tails on the current champion. Returns an improved {"operations": ...} that
     STRICTLY beats the champion's official objective (crane-aware ordering), or
@@ -6970,7 +7039,12 @@ def _tail37_order(prob_info, champ_assign, bays, bay_u, w1, w2, w3,
         # which is slack for the final ops build).
         if remaining < 30.0:
             break
-        hard_deadline = deadline - 20.0
+        # v41: the 20s reserve is sized for a ~0.15s-cf machine; scale it with
+        # the measured verify cost so realize+verify (and the final official
+        # check) always fit inside the true deadline.
+        hard_deadline = deadline - max(20.0, 4.0 * cf_cost)
+        if now > hard_deadline - 5.0:
+            break
         bands_left = len(bands) - band_ix
         share = max(5.0, (hard_deadline - now) / max(1, bands_left))
         build_deadline = now + min(_T37_BUILD_CAP_S, share * 0.5)
@@ -6996,7 +7070,9 @@ def _tail37_order(prob_info, champ_assign, bays, bay_u, w1, w2, w3,
     if not improved:
         return None
     # Final official verification + strict-improvement accept (min-wins).
-    if deadline - time.time() < 10.0:
+    # v41: the 10s floor assumed a fast checker; require room for the actual
+    # measured ops-build + official check cost.
+    if deadline - time.time() < max(10.0, 2.0 * cf_cost):
         return None
     try:
         ops = _t37_build_ops_ordered(working, blocks_data, bays)
@@ -7202,7 +7278,9 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
             _nver += 1
             sol = {"operations": _build_operations(assign)}
             try:
+                _cf_t0 = time.time()
                 res = check_feasibility(prob_info, sol)
+                cf_cost = max(0.3, time.time() - _cf_t0)   # v41: measured
             except Exception:
                 continue
             if res["feasible"]:
@@ -7224,8 +7302,11 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
                         m_assign = _merge_tail(
                             prob_info, bays, bay_u, w1, w2, w3, cands, assign,
                             res["objective"], t_start, _mg_tl,
-                            overflow=_overflow, allow_forced=True)
-                        if m_assign is not assign:
+                            overflow=_overflow, allow_forced=True,
+                            cf_cost=cf_cost)
+                        if (m_assign is not assign
+                                and time.time() < t_start + timelimit
+                                - cf_cost - 0.5):   # v41: verify must fit
                             m_sol = {"operations": _build_operations(m_assign)}
                             m_res = check_feasibility(prob_info, m_sol)
                             if (m_res["feasible"] and m_res["objective"]
@@ -7245,7 +7326,11 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
                 rem_start = t_start + timelimit - time.time()
                 if rem_start >= 10.0:
                     try:
-                        tail_dl = t_start + timelimit - 3.0   # 3s safety
+                        # v41: reserve room for the post-tail verify (ops build
+                        # + official check) out of the tail's own budget; on a
+                        # ~0.15s-cf machine this stays the historical 3.0s.
+                        tail_dl = (t_start + timelimit
+                                   - max(3.0, 2.0 * cf_cost + 1.0))
                         t_assign, t_mv, t_cavg, t_swaps = _tail35_cpsat(
                             prob_info, assign, bays, bay_u, w1, w2, w3, tail_dl,
                             overflow=_overflow)   # v36: bigger model on overflow
@@ -7260,7 +7345,9 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
                                   f"cands_avg={t_cavg:.1f} swaps={t_swaps} "
                                   f"wdelta={t_wdelta:.1f} rem_start={rem_start:.1f}",
                                   flush=True)
-                        if t_assign is not None:
+                        if (t_assign is not None
+                                and time.time() < t_start + timelimit
+                                - cf_cost - 0.5):   # v41: verify must fit
                             t_sol = {"operations": _build_operations(t_assign)}
                             t_res = check_feasibility(prob_info, t_sol)
                             if (t_res["feasible"]
@@ -7282,7 +7369,7 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
                 try:
                     t37_sol = _tail37_order(
                         prob_info, assign, bays, bay_u, w1, w2, w3,
-                        t_start, timelimit, _forced, res)
+                        t_start, timelimit, _forced, res, cf_cost=cf_cost)
                     if t37_sol is not None:
                         return t37_sol
                 except Exception:
@@ -7306,14 +7393,17 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
         _nver += 1
         sol = {"operations": _build_operations(assign)}
         try:
+            _cf_t0 = time.time()
             res = check_feasibility(prob_info, sol)
+            cf_cost = max(0.3, time.time() - _cf_t0)   # v41: measured
         except Exception:
             continue
         if res["feasible"]:
             try:
                 final_assign = _merge_tail(
                     prob_info, bays, bay_u, w1, w2, w3, cands, assign,
-                    w_obj, t_start, timelimit, _overflow)   # v36: overflow knob
+                    w_obj, t_start, timelimit, _overflow,   # v36: overflow knob
+                    cf_cost=cf_cost)
             except Exception:
                 final_assign = assign
             # v38 NON-FORCED ORDER-TAIL CALL SITE. _tail37_order always had a
@@ -7324,6 +7414,12 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
             if final_assign is assign:
                 t37_base_sol, t37_base_res = sol, res
             else:
+                # v41: _merge_tail already official-verified `final_assign`
+                # (it only returns a non-winner on a passed check). If there is
+                # no room left for a redundant re-check, fall back to the
+                # already-verified `sol` rather than risk an overrun.
+                if time.time() > t_start + timelimit - cf_cost - 0.5:
+                    return {"operations": _build_operations(final_assign)}
                 t37_base_sol = {"operations": _build_operations(final_assign)}
                 try:
                     t37_base_res = check_feasibility(prob_info, t37_base_sol)
@@ -7334,7 +7430,7 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
             try:
                 t37_sol = _tail37_order(
                     prob_info, final_assign, bays, bay_u, w1, w2, w3,
-                    t_start, timelimit, _forced, t37_base_res)
+                    t_start, timelimit, _forced, t37_base_res, cf_cost=cf_cost)
                 if t37_sol is not None:
                     return t37_sol
             except Exception:

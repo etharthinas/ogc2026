@@ -1,3 +1,11 @@
+# myalgorithm_42.py -- v42 = v41 + BUDGET-GATED DEPTH SCALING on giants (deep
+# xpack shots D22/K16/30s alternating with the proven D14/K12/13s stream on
+# the W0 reclaimed path; joint-repack rotation override ws=6.0*pbar md=70
+# every 5th entry; repair caps 40/30 -> 64/48 on forced/reclaimed repair) --
+# each gated on >200-300s remaining, so short runs and non-giant paths are
+# byte-identical to v41. See heuristics/heuristic_41.md.
+# ---------------------------------------------------------------------------
+# (v41 header, kept verbatim)
 # myalgorithm_41.py -- v41 = v40 + HARD RETURN-BY-DEADLINE GUARANTEE. Every
 # post-race tail stage (merge pool build/recombine/replay, tail35 pair loop,
 # t37 pool build + per-round realize/verify, and every caller-side official
@@ -1457,9 +1465,13 @@ def _repack_window(prob_info, src, bays, bay_u, w1, w2, w3, raster, rng,
         sched2, loads2 = _rebuild_sched(work, blocks_data, n_bays)
         for bi in sorted(failed, key=lambda i: (dues[i], -areas[i])):
             blk = blocks_data[bi]
+            # v42 knob#3: v8-precedent cap widening (40/30 -> 64/48), budget-
+            # gated so it only pays when scaled time is provably spare.
+            _stc, _spc = ((64, 48) if forced
+                          and deadline - time.time() > 300.0 else (40, 30))
             place = _place_block(bi, blk, bays, sched2, loads2, bay_u, w1, w2, w3,
-                                 forced=forced, slot_time_cap=40, slot_pos_cap=30,
-                                 raster=raster)
+                                 forced=forced, slot_time_cap=_stc,
+                                 slot_pos_cap=_spc, raster=raster)
             if place is None:
                 place = _force_place(bi, blk, bays, sched2)
             _add(sched2, loads2, work, bi, blk, place)
@@ -2505,6 +2517,13 @@ def _improve(prob_info, assignments, bays, bay_u, w1, w2, w3, deadline, forced,
             if deep:
                 ws = (2.0, 1.0, 3.0, 4.0)[(repack_idx // 2) % 4]
                 md = 45
+                # v42 knob#2: every 5th rotation entry is OVERRIDDEN by a
+                # wider joint repack (6.0*pbar, md=70) while >300s remain.
+                # Pure override on the v41 mod-4 rotation: when the time gate
+                # cannot pass, the sequence is byte-identical to v41.
+                if ((repack_idx // 2) % 5 == 4
+                        and deadline - time.time() > 300.0):
+                    ws, md = 6.0, 70
             repack_idx += 1
             try:
                 work = _repack_window(prob_info, cur, bays, bay_u, w1, w2, w3,
@@ -2611,9 +2630,15 @@ def _improve(prob_info, assignments, bays, bay_u, w1, w2, w3, deadline, forced,
             # limited mid-tier); zero-tardiness easies keep the cheap AABB
             # repair (raster costs more per move and buys nothing there).
             use_raster = raster if (forced or best_tardy > 0) else None
+            # v42 knob#3: budget-gated cap widening on the forced/reclaimed
+            # repair path only (v8 precedent 18/14->40/30; now 40/30->64/48
+            # when >300s remain).
+            _stc, _spc = ((64, 48) if (forced or deep)
+                          and deadline - time.time() > 300.0 else (40, 30))
             place = _place_block(bi, blk, bays, sched, bay_loads, bay_u, w1, w2, w3,
-                                 forced=forced, slot_time_cap=40, slot_pos_cap=30,
-                                 bay_order=bo, raster=use_raster)
+                                 forced=forced, slot_time_cap=_stc,
+                                 slot_pos_cap=_spc, bay_order=bo,
+                                 raster=use_raster)
             if place is None:
                 place = _force_place(bi, blk, bays, sched)
             _add(sched, bay_loads, work, bi, blk, place)
@@ -4783,7 +4808,7 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                     base, ob = w_, o_
         return base, ob
 
-    def whole_bay_phase(base, ob, until):
+    def whole_bay_phase(base, ob, until, deep_shots=False):
         """v18 (as-measured): aim exact packing at the GLOBAL BEST, late.
         Drains the island inbox for the best-known incumbent, then fires
         v17's PROVEN window-scale exact-pack shots (D=14/K=12, ~13s,
@@ -4808,11 +4833,27 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
             except Exception:
                 pass
         dl = min(until, deadline)
+        shot_i = 0
         while time.time() < dl - 15.0:
+            # v42 knob#1: on the reclaimed-giant stream, alternate the PROVEN
+            # shot (D=14/K=12/13s) with a DEEP shot (D=22/K=16/30s) while
+            # >200s of phase time remain. Even shots stay proven, so the
+            # known-good stream keeps at least half the shot count; each
+            # accept is still obj-gated below. deep_shots=False (all other
+            # callers) is byte-identical to v41.
+            shot_i += 1
+            deep_now = (deep_shots and (shot_i % 2 == 0)
+                        and dl - time.time() > 200.0)
             try:
-                w_ = _exact_pack_window(prob_info, base, bays, bay_u,
-                                        w1, w2, w3, raster, _xrng, dl,
-                                        forced=forced, budget_s=13.0)
+                if deep_now:
+                    w_ = _exact_pack_window(prob_info, base, bays, bay_u,
+                                            w1, w2, w3, raster, _xrng, dl,
+                                            forced=forced, budget_s=30.0,
+                                            max_destroy=22, K=16)
+                else:
+                    w_ = _exact_pack_window(prob_info, base, bays, bay_u,
+                                            w1, w2, w3, raster, _xrng, dl,
+                                            forced=forced, budget_s=13.0)
             except Exception:
                 w_ = None
             if w_ is not None:
@@ -5138,7 +5179,10 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                 # v18: WHOLE-BAY exact packing aimed at the global best (the
                 # island inbox is drained inside the phase). Supersedes v17's
                 # window shots on the reclaimed stream (measured net-zero).
-                base, ob = whole_bay_phase(base, ob, until=wb_end)
+                # v42 knob#1: this reclaimed-giant stream alternates deep
+                # xpack shots when phase time is plentiful.
+                base, ob = whole_bay_phase(base, ob, until=wb_end,
+                                           deep_shots=True)
                 if time.time() < z3_at - 2.0:
                     o2, r2 = improve(base, seed=1617, until=z3_at,
                                      repack_every=3, xbay=True)
