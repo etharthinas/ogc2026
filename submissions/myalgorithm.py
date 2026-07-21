@@ -1,3 +1,7 @@
+# myalgorithm_40.py -- v40 = v39 + 39b MERGE-ON-FORCED (recombine pool on giants
+# before tail35/t37). See heuristics/heuristic_40.md.
+# ---------------------------------------------------------------------------
+# (v39 header, kept verbatim)
 # myalgorithm_39.py -- v39 = jv9 + v35/v36/v37/v38 tail stack (cross-fork merge).
 # Vendored from myalgorithm_38.py: _tail35_cpsat (in-tail joint frozen CP-SAT on
 # forced), the _t37_* order-tail island + _T37Model (v37, with v38's dropped w1
@@ -5947,7 +5951,8 @@ def _merge_repair_replay(prob_info, merged, warm_assign, rounds=3):
 
 
 def _merge_tail(prob_info, bays, bay_u, w1, w2, w3, cands, winner_assign,
-                winner_obj, t_start, timelimit, overflow=False):
+                winner_obj, t_start, timelimit, overflow=False,
+                allow_forced=False):
     """Post-race self-gating merge. Returns an improved feasible assignment if
     the gate fires AND the merge strictly beats the winner (official-verified);
     otherwise returns winner_assign unchanged (byte-identical v25 path)."""
@@ -5998,8 +6003,12 @@ def _merge_tail(prob_info, bays, bay_u, w1, w2, w3, cands, winner_assign,
     # let the tail fire on forced rocks -- exactly the prob_27 case the
     # coordinator flagged. `_is_forced` makes "forced" a guaranteed non-firing
     # (byte-identical) case, matching requirement 5.
+    # v40 39b: allow_forced=True (forced-site caller only) opens the gate on
+    # forced instances -- jv8/jv9 giant replicas (W4..W7 + deaf) now feed a
+    # genuinely diverse pool there. Default False keeps every other caller
+    # byte-identical to v39.
     if (not _HAVE_NUMPY or remaining < MERGE_MIN or k < 3
-            or _is_forced(prob_info, bays)):
+            or (_is_forced(prob_info, bays) and not allow_forced)):
         _emit(False, 0.0)
         return winner_assign
     pool_solutions = [a for _, a in dedup]
@@ -7008,7 +7017,16 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
     # is False and port_limit == timelimit, so every routed site and both tail
     # caps are identical to jv9. The return-safety cutoffs (hard_stop, abs_stop)
     # use the TRUE deadline -- spare seconds, no reason to rush verification.
-    port_limit = min(timelimit, 600.0)
+    # v40 SCALED CAP: the flat 600s cap is correct at timelimit <= 900 (tails
+    # proved -65k on prob_38 @900 with zero search cost) but catastrophic at
+    # 1800s: probes (2026-07-21, heuristic_40.md) show jv9's uncapped search
+    # lands 36.34M on prob_38 @1800 while the capped v39 returns 38.13M at
+    # 627s, wasting 1170s. Search now keeps everything beyond a flat 300s
+    # tail window; at timelimit <= 900 this reduces to the v36/v39 pacing.
+    if timelimit <= 600.0:
+        port_limit = timelimit
+    else:
+        port_limit = max(600.0, timelimit - 300.0)
     _overflow = timelimit > port_limit + 1e-9
     import multiprocessing as _mp
     nw = min(4, _mp.cpu_count() or 1)
@@ -7188,6 +7206,33 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
             except Exception:
                 continue
             if res["feasible"]:
+                # v40 39b MERGE-ON-FORCED: recombine the queue-drained pool on
+                # the verified champion BEFORE tail35/t37. Overflow-gated (TL >
+                # 600) so the merge spends only overflow time, never
+                # search-reserve. Budget: at most HALF the remaining window at
+                # its start (passed as a synthetic timelimit -- _merge_tail's
+                # only use of t_start/timelimit is the absolute end t_start +
+                # timelimit), leaving tail35 (>=10s gate) and t37 (>=120s gate)
+                # their room. _merge_tail itself is min-wins + official-verified;
+                # the re-check here rebinds assign/sol/res so the downstream
+                # tails see the post-merge champion.
+                if _overflow:
+                    try:
+                        _mg_rem = (t_start + timelimit) - time.time()
+                        _mg_tl = ((t_start + timelimit - 0.5 * _mg_rem)
+                                  - t_start)
+                        m_assign = _merge_tail(
+                            prob_info, bays, bay_u, w1, w2, w3, cands, assign,
+                            res["objective"], t_start, _mg_tl,
+                            overflow=_overflow, allow_forced=True)
+                        if m_assign is not assign:
+                            m_sol = {"operations": _build_operations(m_assign)}
+                            m_res = check_feasibility(prob_info, m_sol)
+                            if (m_res["feasible"] and m_res["objective"]
+                                    < res["objective"] - 1e-9):
+                                assign, sol, res = m_assign, m_sol, m_res
+                    except Exception:
+                        pass
                 # v35 FORCED OBJ2/OBJ3-ONLY TAIL: shrunk JOINT CP-SAT over
                 # time-frozen positions (swaps/chains). Strictly post-race and
                 # post-winner-selection. Fires only with real spare time (the
