@@ -3,6 +3,51 @@
 **Authorized 2026-07-21.** Start with the bounded 1–2h Gurobi prototype (below)
 BEFORE any multi-day build. New chat picks this up.
 
+## RESULT 2026-07-21 — PROTOTYPE RAN, ZERO YIELD, FORECLOSURE AIRTIGHT
+
+Probe: `baseline/probe_gurobi_nfp.py` (true-shape NFP MIP; run
+`python probe_gurobi_nfp.py dumps/prob_39.myalgorithm_jv9.json --bay B`).
+Verdict on jv9's prob_39 (obj 8,406,071, Z1=553, per-bay 143/182/228):
+**on ALL THREE bays the exact optimum equals the incumbent, PROVEN**
+(bound == incumbent; bay0 D=12: 123→123, bay1 D=11: 154→154, bay2 D=6:
+132→132; spliced solutions re-verify byte-identical objectives). Gurobi
+finds nothing = the plan's decision rule fires: report and stop.
+
+Two structural discoveries that outlive the probe:
+1. **The checker evaluates INTEGER coordinates only.** `check_feasibility`
+   rebuilds every Block with `x=int(round(x))` (utils.py:1154/1334). The
+   "continuous non-overlap NFP" angle — the one differentiator this plan
+   called genuinely new — does not exist as a degree of freedom. Any nester,
+   global or local, plays on the same integer grid the raster engine already
+   searches. (Measured the hard way: float solutions placed 5e-3 outside the
+   NFP boundary round INTO overlap and fail stage 2.)
+2. **Gurobi's license is size-restricted: 2000 vars / 2000 constraints**
+   (hits at 2001; expiry 2027-11-29 is real but the cap is what binds).
+   Whole-bay exact models are impossible on this machine; Xpress is a dead
+   network license (error 998). Model budget forces (bay, window) locality:
+   D<=14 movers, radius 6, ~1500-1900 vars.
+
+Probe model (sound, checker-validated end-to-end): movers = most-tardy
+non-interlocked blocks of the worst window; integer (x,y) in a radius-6 box
+x integer entry times; per-pair disjunction [time-disjoint] OR [relative
+vector outside EVERY convex piece of the true union-footprint NFP]
+(ear-clip + Hertel-Mehlhorn decomposition, piece-pair Minkowski, unioned +
+re-decomposed, reachability-pruned big-M edges). Conservatisms: union
+footprint (forbids the layer-order interlocks the incumbent DOES use — the
+model literally cannot represent some jv9 placements, they had to be
+pre-banned from the mover set), orientation fixed, NFP holes filled.
+
+Why this closes the moonshot rather than just narrowing it: the exact
+optimizer was given MORE freedom than the dead CP-SAT menus (full ~169-cell
+integer neighborhood per mover, jointly, plus free retiming) and proved the
+heuristic's packing locally optimal on every giant hot window; the only
+untested regime is whole-bay/global scale, which (a) has no solver vehicle
+under the license caps, and (b) lost its claimed differentiator with the
+integer-grid discovery — a global exact nester would be searching the same
+lattice the portfolio already saturates, with the same interlock semantics
+CP-SAT already encodes exactly. <120M stays foreclosed under everything
+tractable on this machine.
+
 ## Where we are (don't re-derive — it's measured)
 - SOTA = **jv9** (`baseline/myalgorithm_jv9.py` = `myalgorithm.py`), honest
   full-40 single-shot **122,728,934** (−2.4% vs jv6 124.48M). Composed
