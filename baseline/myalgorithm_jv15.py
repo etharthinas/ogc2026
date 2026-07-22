@@ -536,6 +536,9 @@ try:
         _Z3T = {int(k): int(v) for k, v in _z3json.load(open(_p)).items()}
 except Exception:
     _Z3T = None
+# OGC_Z3_REPACK: fire the xbay Z3 group relocation on zero-tardy cells (the
+# jv9 gate best_tardy>0 kept ~2M of w3*Z3 pool untouched on 22/29/24/20-class).
+_Z3RP = _z3os.environ.get("OGC_Z3_REPACK", "") not in ("", "0")
 
 try:
     import numpy as _np
@@ -2483,14 +2486,19 @@ def _improve(prob_info, assignments, bays, bay_u, w1, w2, w3, deadline, forced,
                 pass
         # Early stop: nothing tardy left and the search has stalled -> the obj2/
         # obj3 part is exhausted; stop instead of burning the rest of the budget.
-        if best_tardy == 0 and since_best > 40:
+        # jv15 (OGC_Z3_REPACK): on zero-tardy cells the xbay Z3 group relocation
+        # below never fired (best_tardy>0 gate) -- with the flag on, keep going
+        # and let the obj-gate decide.
+        if best_tardy == 0 and since_best > 40 and not _Z3RP:
             break
         rounds += 1
         # v14: JOINT WINDOW REPACK round (obj-gated, tardy instances only). Every
         # `repack_every`-th round, destroy+rebuild a whole congested (bay,window)
         # jointly instead of the classic scattered destroy/repair. repack_every==0
         # (W0 + v13-basin tickets) skips this entirely -> byte-exact v13.
-        if (repack_every > 0 and raster is not None and best_tardy > 0
+        _z3rp_fire = (_Z3RP and best_tardy == 0 and n_bays >= 2)
+        if (repack_every > 0 and raster is not None
+                and (best_tardy > 0 or _z3rp_fire)
                 and rounds % repack_every == 0):
             # v15: alternate single-bay / cross-bay round-robin. First fire is
             # single-bay (== v14); cross-bay every other fire when enabled. The
@@ -2498,7 +2506,9 @@ def _improve(prob_info, assignments, bays, bay_u, w1, w2, w3, deadline, forced,
             # v16 `deep` (reclaimed instances only): destroy cap 30 -> 45 and
             # the window scale rotates per fire over {2,1,3,4}*pbar.
             mode = 'sbay'
-            if xbay and n_bays >= 2 and (repack_idx % 2 == 1):
+            if _z3rp_fire:
+                mode = 'xbay'   # z1=0: only the Z3 group relocation can pay
+            elif xbay and n_bays >= 2 and (repack_idx % 2 == 1):
                 mode = 'xbay'
             ws = repack_win_scale
             md = 30
