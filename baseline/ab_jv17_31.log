@@ -1,0 +1,5 @@
+prob_31: myalgorithm[total=7,884,864 z1=378 z2=2972 z3=10622] (693.0s)
+         myalgorithm_jv17[total=7,179,261 z1=333 z2=3989 z3=10215] (692.4s) | lex=myalgorithm_jv17 weighted_delta(A-B)=+705,603
+------------------------------------------------------------------------------------------
+myalgorithm total=7,884,864   myalgorithm_jv17 total=7,179,261   improvement=+705,603
+obj1 sums: myalgorithm=378 myalgorithm_jv17=333 | lex wins myalgorithm=0 myalgorithm_jv17=1 ties=0

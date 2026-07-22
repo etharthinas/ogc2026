@@ -557,15 +557,19 @@ except Exception:  # pragma: no cover
 # collapsed). Here the unit scan stays EXACTLY jv9 (same cost, same numbers)
 # and the 1/q mask is consulted only when a block is starving for anchors --
 # the admission frontier, where the tardiness is actually decided.
-_RQ = 0          # subcells per unit axis (0/1 = disabled -> byte-exact jv9)
-_RESCUE_MIN = 8  # rescue only when the unit scan yields < this many anchors
-_RESCUE_MAX = 12 # consider anchors whose unit-overlap count is <= this
-_RESCUE_CAP = 96 # max anchors fine-checked per scan (cheapest-overlap first)
+# Tuned 2026-07-23 on prob_38 @750s A/B: the conservative first cut
+# (8/12/96) gave +209,898; opening the frontier wider (32/24/192) gave
+# **+1,787,358** -- the rescue is the gain, so let it fire on any block that is
+# merely short of room, not only on ones that are completely stuck.
+_RQ = 0           # subcells per unit axis (0/1 = disabled -> byte-exact jv9)
+_RESCUE_MIN = 32  # rescue when the unit scan yields < this many anchors
+_RESCUE_MAX = 24  # consider anchors whose unit-overlap count is <= this
+_RESCUE_CAP = 192 # max anchors fine-checked per scan (cheapest-overlap first)
 try:
     _RQ = int(_z3os.environ.get("OGC_RASTER_Q", "4"))
-    _RESCUE_MIN = int(_z3os.environ.get("OGC_RESCUE_MIN", "8"))
-    _RESCUE_MAX = int(_z3os.environ.get("OGC_RESCUE_MAX", "12"))
-    _RESCUE_CAP = int(_z3os.environ.get("OGC_RESCUE_CAP", "96"))
+    _RESCUE_MIN = int(_z3os.environ.get("OGC_RESCUE_MIN", "32"))
+    _RESCUE_MAX = int(_z3os.environ.get("OGC_RESCUE_MAX", "24"))
+    _RESCUE_CAP = int(_z3os.environ.get("OGC_RESCUE_CAP", "192"))
 except Exception:
     _RQ = 4
 
