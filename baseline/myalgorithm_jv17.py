@@ -557,19 +557,25 @@ except Exception:  # pragma: no cover
 # collapsed). Here the unit scan stays EXACTLY jv9 (same cost, same numbers)
 # and the 1/q mask is consulted only when a block is starving for anchors --
 # the admission frontier, where the tardiness is actually decided.
-# Tuned 2026-07-23 on prob_38 @750s A/B: the conservative first cut
-# (8/12/96) gave +209,898; opening the frontier wider (32/24/192) gave
-# **+1,787,358** -- the rescue is the gain, so let it fire on any block that is
-# merely short of room, not only on ones that are completely stuck.
-_RQ = 0           # subcells per unit axis (0/1 = disabled -> byte-exact jv9)
-_RESCUE_MIN = 32  # rescue when the unit scan yields < this many anchors
-_RESCUE_MAX = 24  # consider anchors whose unit-overlap count is <= this
-_RESCUE_CAP = 192 # max anchors fine-checked per scan (cheapest-overlap first)
+# Tuned 2026-07-23, prob_38 @750s A/B vs jv9 (the sweep is unimodal -- rescue
+# buys density, but every rescued anchor costs scan throughput, and on a giant
+# throughput is what finds the basin):
+#   8/12/96     +209,898
+#   32/24/192   +1,787,358
+#   128/48/512  +2,575,535   <- adopted
+#   always-on (MIN=inf, 64/1024)  +1,729,439  (throughput collapse begins)
+_RQ = 0            # subcells per unit axis (0/1 = disabled -> byte-exact jv9)
+_RESCUE_MIN = 128  # rescue when the unit scan yields < this many anchors
+_RESCUE_MAX = 48   # consider anchors whose unit-overlap count is <= this
+_RESCUE_CAP = 512  # max anchors fine-checked per scan (cheapest-overlap first)
+_RESCUE_ENV = False   # True when the operator pinned the width by env (probes)
 try:
     _RQ = int(_z3os.environ.get("OGC_RASTER_Q", "4"))
-    _RESCUE_MIN = int(_z3os.environ.get("OGC_RESCUE_MIN", "32"))
-    _RESCUE_MAX = int(_z3os.environ.get("OGC_RESCUE_MAX", "24"))
-    _RESCUE_CAP = int(_z3os.environ.get("OGC_RESCUE_CAP", "192"))
+    _RESCUE_ENV = any(_z3os.environ.get(k) for k in
+                      ("OGC_RESCUE_MIN", "OGC_RESCUE_MAX", "OGC_RESCUE_CAP"))
+    _RESCUE_MIN = int(_z3os.environ.get("OGC_RESCUE_MIN", "128"))
+    _RESCUE_MAX = int(_z3os.environ.get("OGC_RESCUE_MAX", "48"))
+    _RESCUE_CAP = int(_z3os.environ.get("OGC_RESCUE_CAP", "512"))
 except Exception:
     _RQ = 4
 
@@ -3000,6 +3006,20 @@ class _Raster:
         # jv17 subcell layer: a PARALLEL 1/q occupancy, maintained alongside the
         # unit one and consulted only by the rescue path in scan/scan_scoped.
         self.q = _RQ if (_RQ and _RQ > 1) else 1
+        # Rescue width is SIZE-ADAPTIVE (measured 2026-07-23, A/B @750s vs jv9):
+        #   prob_38 n=250: 8/12/96 +209,898 | 32/24/192 +1,787,358 |
+        #                  128/48/512 +2,575,535 | always-on +1,729,439
+        #   prob_31 n=200: 8/12/96 +705,603  | 128/48/512 +425,869
+        # Big instances are admission-starved -- every extra legal anchor pays.
+        # Smaller ones already have anchors, so a wide rescue only spends the
+        # scan budget that their deeper polish needs. Env vars override both.
+        n_blk = len(self.blocks_data)
+        if n_blk >= 250:
+            self.r_min, self.r_max, self.r_cap = 128, 48, 512
+        else:
+            self.r_min, self.r_max, self.r_cap = 8, 12, 96
+        if _RESCUE_ENV:
+            self.r_min, self.r_max, self.r_cap = _RESCUE_MIN, _RESCUE_MAX, _RESCUE_CAP
         self._maskf = {}                      # (bi, oi) -> fine (mask, cx0, cy0)
         self.occf = [dict() for _ in bays]    # bay -> {layer: int16 fine grid}
         self._unif = [None for _ in bays]     # bay -> (ver, [fine union_ge])
@@ -3130,13 +3150,13 @@ class _Raster:
         Returns the number of anchors recovered."""
         if self.q <= 1:
             return 0
-        cand = _np.logical_and(total > 0, total <= _RESCUE_MAX)
+        cand = _np.logical_and(total > 0, total <= self.r_max)
         idx = _np.flatnonzero(cand.ravel())
         if idx.size == 0:
             return 0
-        if idx.size > _RESCUE_CAP:                    # cheapest overlap first
+        if idx.size > self.r_cap:                     # cheapest overlap first
             tv = total.ravel()[idx]
-            idx = idx[_np.argpartition(tv, _RESCUE_CAP - 1)[:_RESCUE_CAP]]
+            idx = idx[_np.argpartition(tv, self.r_cap - 1)[:self.r_cap]]
         uf = self._unions_fine(bay) if unions_fine is None else unions_fine
         if not uf:
             return 0
@@ -3323,7 +3343,7 @@ class _Raster:
         # bay closed to it. This is the admission frontier (100% of measured
         # tardiness is entry delay), and it is the only place the extra
         # resolution changes a decision, so the cost stays negligible.
-        if self.q > 1 and int(feas.sum()) < _RESCUE_MIN:
+        if self.q > 1 and int(feas.sum()) < self.r_min:
             self._rescue(bay, bi, oi, total, feas)
         self._scan[bay][(bi, oi)] = (self.ver[bay], feas, cx0, cy0)
         if self.near_enabled:
@@ -3434,7 +3454,7 @@ class _Raster:
             win = _swv(Vk.astype(_np.int32), (MH, MW))
             total += _np.einsum('rcij,ij->rc', win, mk.astype(_np.int32))
         feas_s = (total == 0)
-        if self.q > 1 and int(feas_s.sum()) < _RESCUE_MIN:
+        if self.q > 1 and int(feas_s.sum()) < self.r_min:
             self._rescue(bay, bi, oi, total, feas_s,
                          unions_fine=self._scoped_union_fine(bay, actives))
         if want_near:
