@@ -52,17 +52,42 @@ official `utils.check_entry` → **0 violations**.
 Cost: **0.66 ms/scan** (jv9 0.39, jv16 2.53). Env knobs `OGC_RASTER_Q`,
 `OGC_RESCUE_MIN/MAX/CAP`; `OGC_RASTER_Q=1` ⇒ byte-exact jv9.
 
-## Measured (this machine, A/B vs jv9 @750s unless noted)
+## Rescue width: swept, unimodal, and SIZE-DEPENDENT
 
-| cell | jv9 | jv17 | delta |
-|---|---|---|---|
-| 38 | 36,756,532 | **36,546,634** | **+209,898** (z1 tie, z3 7042→6344; no fallback) |
-| 31 | 7,884,864 | **7,179,261** | **+705,603** (z1 378→333) |
-| 37 (W0 probe @420s) | 6,481,834 | **5,486,611** | −15.4% (single worker below the jv9 portfolio's 750s record 5,699,640) |
-| 1 / 5 / 20 @200s | 15,751 / 77,765 / 183,494 | 1,499 / 74,971 / 132,393 | +14,252 / +2,794 / +51,101 |
-| 12 @200s | 84,350 | 134,015 | −49,665 (z1=0 both; z3 510→896 — Z3-endgame draw, recheck) |
+Every rescued anchor buys density but costs scan throughput, and on a giant
+throughput is what finds the basin. prob_38 @750s A/B vs jv9:
 
-Small-cell battery net +18,482 (3W/1L). No feasibility failures anywhere.
+| MIN/MAX/CAP | delta |
+|---|---|
+| 8 / 12 / 96 | +209,898 |
+| 32 / 24 / 192 | +1,787,358 |
+| **128 / 48 / 512** | **+2,575,535** |
+| always-on (∞ / 64 / 1024) | +1,729,439 |
+
+But prob_31 (n=200) reverses it: 8/12/96 → +705,603 vs 128/48/512 → +425,869.
+Big instances are admission-starved (every extra legal anchor pays); smaller
+ones already have anchors and need the scan budget for polish depth. Hence
+**size-adaptive width in `_Raster.__init__`**: n ≥ 250 → 128/48/512, else
+8/12/96 (env vars override for probes).
+
+## Measured (this machine, A/B vs jv9 @750s unless noted; adaptive width)
+
+| cell | n | jv9 | jv17 | delta |
+|---|---|---|---|---|
+| 38 | 250 | 36,756,532 | **34,180,997** | **+2,575,535** (z1 2598→2419) |
+| 26 | 150 | 7,908,663 | **7,184,621** | **+724,042** (z1 534→477) |
+| 31 | 200 | 7,884,864 | **7,179,261** | **+705,603** (z1 378→333) |
+| 37 | 250 | 5,699,640 | **5,291,045** | **+408,595** (z1 916→769) |
+| 39 | 250 | 8,389,519 | **8,013,678** | **+375,841** (z1 553→530) |
+| 27 | 150 | 23,649,558 | 23,651,026 | −1,468 (tie; z1 1628→1626, lex win) |
+| 33 | 200 | 7,623,365 | 7,705,521 | −82,156 (z1 1005→1023 — recheck at wide width) |
+| 1 / 5 / 20 @200s | | 15,751 / 77,765 / 183,494 | 1,499 / 74,971 / 132,393 | +14,252 / +2,794 / +51,101 |
+| 12 @200s | | 84,350 | 134,015 | −49,665 (z1=0 both; z3 510→896 — Z3-endgame draw, recheck) |
+
+**Measured-cell total: +4,710,940** vs jv9 (which single-shots 122,728,934) →
+projected ≈ 118.0M with 31 cells still unmeasured. Aggregate z1 falls on every
+class, which is the mechanism working as diagnosed. No feasibility failures
+and no empty-fallbacks anywhere. Full-40 single-shot running to confirm.
 
 ## Consequence
 
