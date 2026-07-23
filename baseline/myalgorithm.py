@@ -520,6 +520,25 @@ import math
 import time
 import random
 import re  # v33: parse block ids from check_feasibility violation strings
+import os as _z3os
+import json as _z3json
+
+# jv15: LP-target bay-membership bias (env-gated; default OFF = jv9-identical).
+# OGC_Z3_TARGET = path to {block_id: bay_id} json (CP-SAT assignment optimum);
+# OGC_Z3_BONUS  = penalty added to bay_score for non-target bays (objective
+# units; large => hard following). Loaded once at import for probe use.
+_Z3T = None
+_Z3B = 0.0
+try:
+    _p = _z3os.environ.get("OGC_Z3_TARGET")
+    _Z3B = float(_z3os.environ.get("OGC_Z3_BONUS", "0") or 0.0)
+    if _p and _Z3B > 0.0 and _z3os.path.exists(_p):
+        _Z3T = {int(k): int(v) for k, v in _z3json.load(open(_p)).items()}
+except Exception:
+    _Z3T = None
+# OGC_Z3_REPACK: fire the xbay Z3 group relocation on zero-tardy cells (the
+# jv9 gate best_tardy>0 kept ~2M of w3*Z3 pool untouched on 22/29/24/20-class).
+_Z3RP = _z3os.environ.get("OGC_Z3_REPACK", "") not in ("", "0")
 
 try:
     import numpy as _np
@@ -529,6 +548,43 @@ except Exception:  # pragma: no cover
     _np = None
     _swv = None
     _HAVE_NUMPY = False
+
+# jv17 SUBCELL RESCUE parameters (see _Raster). The unit-grid mask marks a cell
+# occupied when a polygon merely TOUCHES it, dilating every fractional-vertex
+# block by up to one cell per edge; measured true polygon density at the peak
+# moments that force ALL tardiness is only 0.48-0.70 while the engine reads
+# "full". jv16 rasterised everything at 1/q and lost 6.5x throughput (prob_38
+# collapsed). Here the unit scan stays EXACTLY jv9 (same cost, same numbers)
+# and the 1/q mask is consulted only when a block is starving for anchors --
+# the admission frontier, where the tardiness is actually decided.
+# Tuned 2026-07-23, prob_38 @750s A/B vs jv9 (the sweep is unimodal -- rescue
+# buys density, but every rescued anchor costs scan throughput, and on a giant
+# throughput is what finds the basin):
+#   8/12/96     +209,898
+#   32/24/192   +1,787,358
+#   128/48/512  +2,575,535   <- adopted
+#   always-on (MIN=inf, 64/1024)  +1,729,439  (throughput collapse begins)
+_RQ = 0            # subcells per unit axis (0/1 = disabled -> byte-exact jv9)
+_RESCUE_MIN = 128  # rescue when the unit scan yields < this many anchors
+_RESCUE_MAX = 48   # consider anchors whose unit-overlap count is <= this
+_RESCUE_CAP = 512  # max anchors fine-checked per scan (cheapest-overlap first)
+_RESCUE_ENV = False   # True when the operator pinned the width by env (probes)
+# jv17b WIDE RETRY (OGC_WIDE_RETRY=1): when an admission actually fails, re-scan
+# that one block with the rescue fully open (4x r_max, 8x r_cap) and a 4x exact
+# gate budget before deferring it. Failure is the exact signal that the r_min
+# anchor-count trigger only approximates. Default OFF so jv17 stays byte-equal
+# to the configuration measured on 2026-07-23 until this is A/B'd.
+_WIDE_RETRY = False
+try:
+    _RQ = int(_z3os.environ.get("OGC_RASTER_Q", "4"))
+    _RESCUE_ENV = any(_z3os.environ.get(k) for k in
+                      ("OGC_RESCUE_MIN", "OGC_RESCUE_MAX", "OGC_RESCUE_CAP"))
+    _RESCUE_MIN = int(_z3os.environ.get("OGC_RESCUE_MIN", "128"))
+    _RESCUE_MAX = int(_z3os.environ.get("OGC_RESCUE_MAX", "48"))
+    _RESCUE_CAP = int(_z3os.environ.get("OGC_RESCUE_CAP", "512"))
+    _WIDE_RETRY = _z3os.environ.get("OGC_WIDE_RETRY", "") not in ("", "0")
+except Exception:
+    _RQ = 4
 
 from utils import (
     Bay, Block,
@@ -1035,6 +1091,8 @@ def _place_block(bi, blk, bays, sched, bay_loads, bay_u, w1, w2, w3,
                      for j in range(n_bays) if j != bay_id), default=0.0)
         sc = (w1 * tardiness + w2 * imbal + w3 * (s_max - prefs[bay_id])
               + 1e-4 * top_y)
+        if _Z3T is not None and _Z3T.get(bi, bay_id) != bay_id:
+            sc += _Z3B
         if util_gamma > 0.0 and entry is not None:
             bay = bays[bay_id]
             sc += util_gamma * w1 * _window_util(
@@ -1043,6 +1101,10 @@ def _place_block(bi, blk, bays, sched, bay_loads, bay_u, w1, w2, w3,
 
     if bay_order is None:
         bay_order = sorted(range(n_bays), key=lambda j: prefs[j], reverse=True)
+    if _Z3T is not None:
+        _tb = _Z3T.get(bi)
+        if _tb is not None and 0 <= _tb < n_bays:
+            bay_order = [_tb] + [j for j in bay_order if j != _tb]
     best_score = float("inf")
     best = None
 
@@ -2461,14 +2523,19 @@ def _improve(prob_info, assignments, bays, bay_u, w1, w2, w3, deadline, forced,
                 pass
         # Early stop: nothing tardy left and the search has stalled -> the obj2/
         # obj3 part is exhausted; stop instead of burning the rest of the budget.
-        if best_tardy == 0 and since_best > 40:
+        # jv15 (OGC_Z3_REPACK): on zero-tardy cells the xbay Z3 group relocation
+        # below never fired (best_tardy>0 gate) -- with the flag on, keep going
+        # and let the obj-gate decide.
+        if best_tardy == 0 and since_best > 40 and not _Z3RP:
             break
         rounds += 1
         # v14: JOINT WINDOW REPACK round (obj-gated, tardy instances only). Every
         # `repack_every`-th round, destroy+rebuild a whole congested (bay,window)
         # jointly instead of the classic scattered destroy/repair. repack_every==0
         # (W0 + v13-basin tickets) skips this entirely -> byte-exact v13.
-        if (repack_every > 0 and raster is not None and best_tardy > 0
+        _z3rp_fire = (_Z3RP and best_tardy == 0 and n_bays >= 2)
+        if (repack_every > 0 and raster is not None
+                and (best_tardy > 0 or _z3rp_fire)
                 and rounds % repack_every == 0):
             # v15: alternate single-bay / cross-bay round-robin. First fire is
             # single-bay (== v14); cross-bay every other fire when enabled. The
@@ -2476,7 +2543,9 @@ def _improve(prob_info, assignments, bays, bay_u, w1, w2, w3, deadline, forced,
             # v16 `deep` (reclaimed instances only): destroy cap 30 -> 45 and
             # the window scale rotates per fire over {2,1,3,4}*pbar.
             mode = 'sbay'
-            if xbay and n_bays >= 2 and (repack_idx % 2 == 1):
+            if _z3rp_fire:
+                mode = 'xbay'   # z1=0: only the Z3 group relocation can pay
+            elif xbay and n_bays >= 2 and (repack_idx % 2 == 1):
                 mode = 'xbay'
             ws = repack_win_scale
             md = 30
@@ -2941,6 +3010,28 @@ class _Raster:
         self.occ = [dict() for _ in bays]     # bay -> {layer: int16 grid (H,W)}
         self.ver = [0 for _ in bays]          # occupancy version per bay
         self._uni = [None for _ in bays]      # bay -> (ver, [union_ge grids])
+        # jv17 subcell layer: a PARALLEL 1/q occupancy, maintained alongside the
+        # unit one and consulted only by the rescue path in scan/scan_scoped.
+        self.q = _RQ if (_RQ and _RQ > 1) else 1
+        # Rescue width is SIZE-ADAPTIVE (measured 2026-07-23, A/B @750s vs jv9):
+        #   prob_38 n=250: 8/12/96 +209,898 | 32/24/192 +1,787,358 |
+        #                  128/48/512 +2,575,535 | always-on +1,729,439
+        #   prob_31 n=200: 8/12/96 +705,603  | 128/48/512 +425,869
+        # Big instances are admission-starved -- every extra legal anchor pays.
+        # Smaller ones already have anchors, so a wide rescue only spends the
+        # scan budget that their deeper polish needs. Env vars override both.
+        n_blk = len(self.blocks_data)
+        if n_blk >= 250:
+            self.r_min, self.r_max, self.r_cap = 128, 48, 512
+        else:
+            self.r_min, self.r_max, self.r_cap = 8, 12, 96
+        if _RESCUE_ENV:
+            self.r_min, self.r_max, self.r_cap = _RESCUE_MIN, _RESCUE_MAX, _RESCUE_CAP
+        self._wide = None    # block id currently granted the widest rescue
+        self._maskf = {}                      # (bi, oi) -> fine (mask, cx0, cy0)
+        self.occf = [dict() for _ in bays]    # bay -> {layer: int16 fine grid}
+        self._unif = [None for _ in bays]     # bay -> (ver, [fine union_ge])
+        self.rescued = 0                      # diagnostics: anchors recovered
         # v13 throughput caches (transparent -- same numeric results as v12):
         self._scan = [dict() for _ in bays]   # bay -> {(bi,oi): (ver, feas,cx0,cy0)}
         self._fp = [None for _ in bays]       # bay -> (ver, footprint bool grid)
@@ -2959,6 +3050,7 @@ class _Raster:
         # by (bay, actives); pure memoization, byte-identical output.
         self._scoped = {}                     # (bay, tuple(actives)) -> (maxL, union_ge, occ_fp)
         self._SCOPED_CAP = 4096
+        self._scopedf = {}                    # jv17: fine scoped unions (rescue)
 
     # -- mask construction -----------------------------------------------------
     def mask(self, bi, oi):
@@ -2994,6 +3086,138 @@ class _Raster:
         m = (mask, cx0, cy0)
         self._mask[key] = m
         return m
+
+    def fmask(self, bi, oi):
+        """jv17: 1/q SUBCELL mask (nl, MH*q, MW*q) uint8 with the same
+        (cx0, cy0) unit anchor mapping as mask(). Closed-subcell conservative
+        (a subcell is set iff the layer polygon touches it), so subcell
+        disjointness still PROVES no positive-area overlap and no crane-path
+        conflict -- the rescue is sound in exactly the same sense as the unit
+        mask, just ~q times less dilated. Commits remain exact-gated by
+        _can_place. Built lazily; only blocks that actually starve get one."""
+        key = (bi, oi)
+        m = self._maskf.get(key)
+        if m is not None:
+            return m
+        import shapely
+        q = self.q
+        layers = _resolve_layers(self.blocks_data[bi]["shape"][oi]["layers"])
+        allv = [v for L in layers for v in L]
+        if not allv:
+            m = (_np.zeros((1, q, q), dtype=_np.uint8), 0, 0)
+            self._maskf[key] = m
+            return m
+        xs = [v[0] for v in allv]; ys = [v[1] for v in allv]
+        cx0 = int(math.floor(min(xs))); cx1 = int(math.ceil(max(xs))) - 1
+        cy0 = int(math.floor(min(ys))); cy1 = int(math.ceil(max(ys))) - 1
+        if cx1 < cx0: cx1 = cx0
+        if cy1 < cy0: cy1 = cy0
+        MW = (cx1 - cx0 + 1) * q; MH = (cy1 - cy0 + 1) * q
+        mask = _np.zeros((len(layers), MH, MW), dtype=_np.uint8)
+        step = 1.0 / q
+        CX, CY = _np.meshgrid(cx0 + step * _np.arange(MW),
+                              cy0 + step * _np.arange(MH))
+        boxes = shapely.box(CX, CY, CX + step, CY + step)
+        for l, L in enumerate(layers):
+            p = _poly_from_verts(L)
+            if p is None:
+                continue
+            mask[l] = shapely.intersects(boxes, p).astype(_np.uint8)
+        m = (mask, cx0, cy0)
+        self._maskf[key] = m
+        return m
+
+    def _unions_fine(self, bay):
+        """Fine analogue of _unions(): union of present layers >= k on the 1/q
+        grid. Cached per (bay, ver); built only when a rescue needs it."""
+        cache = self._unif[bay]
+        if cache is not None and cache[0] == self.ver[bay]:
+            return cache[1]
+        occ = self.occf[bay]
+        q = self.q
+        H, W = self.H[bay] * q, self.W[bay] * q
+        if not occ:
+            self._unif[bay] = (self.ver[bay], [])
+            return []
+        maxL = max(occ.keys())
+        union_ge = [None] * (maxL + 1)
+        cum = _np.zeros((H, W), dtype=bool)
+        for l in range(maxL, -1, -1):
+            g = occ.get(l)
+            if g is not None:
+                cum = cum | (g > 0)
+            union_ge[l] = cum
+        self._unif[bay] = (self.ver[bay], union_ge)
+        return union_ge
+
+    def widen(self, bi):
+        """jv17b: grant block `bi` the widest possible rescue on its next scans
+        (and drop its cached scans so they recompute). Called by the dispatcher
+        only when an admission has ALREADY FAILED -- failure is the exact signal
+        the r_min anchor-count heuristic only approximates, and a deferred block
+        is precisely a unit of tardiness about to be paid. `widen(None)` clears.
+        The wider result is a sound superset, so caching it is safe."""
+        if self.q <= 1 or bi == self._wide:
+            return
+        self._wide = bi
+        if bi is not None:
+            for j in range(len(self.bays)):
+                sc = self._scan[j]
+                for key in [k for k in sc if k[0] == bi]:
+                    del sc[key]
+
+    def _rescue(self, bay, bi, oi, total, feas, unions_fine=None):
+        """jv17: fine-check the cheapest anchors the UNIT scan rejected and
+        flip the ones that are genuinely clear at 1/q resolution. `total` is
+        the unit overlap-count grid, `feas` the (R,C) bool grid to update in
+        place. `unions_fine` overrides the bay occupancy (scoped repair path).
+        Returns the number of anchors recovered."""
+        if self.q <= 1:
+            return 0
+        wide = (bi == self._wide)
+        r_max = self.r_max * 4 if wide else self.r_max
+        r_cap = self.r_cap * 8 if wide else self.r_cap
+        cand = _np.logical_and(total > 0, total <= r_max)
+        idx = _np.flatnonzero(cand.ravel())
+        if idx.size == 0:
+            return 0
+        if idx.size > r_cap:                          # cheapest overlap first
+            tv = total.ravel()[idx]
+            idx = idx[_np.argpartition(tv, r_cap - 1)[:r_cap]]
+        uf = self._unions_fine(bay) if unions_fine is None else unions_fine
+        if not uf:
+            return 0
+        fmask, fcx0, fcy0 = self.fmask(bi, oi)
+        nlf, MHf, MWf = fmask.shape
+        maxLf = len(uf) - 1
+        Hf, Wf = self.H[bay] * self.q, self.W[bay] * self.q
+        C = feas.shape[1]
+        got = 0
+        for flat in idx:
+            r, c = divmod(int(flat), C)
+            # window (r,c) is the UNIT anchor; the fine mask uses the same
+            # (cx0,cy0) offset convention, so the fine window starts at r*q.
+            rf = r * self.q
+            cf = c * self.q
+            if rf < 0 or cf < 0 or rf + MHf > Hf or cf + MWf > Wf:
+                continue
+            clear = True
+            for k in range(min(nlf, maxLf + 1)):
+                Vk = uf[k]
+                if Vk is None:
+                    continue
+                mk = fmask[k]
+                if not mk.any():
+                    continue
+                if _np.any(_np.logical_and(Vk[rf:rf + MHf, cf:cf + MWf],
+                                           mk.astype(bool))):
+                    clear = False
+                    break
+            if clear:
+                feas[r, c] = True
+                got += 1
+        self.rescued += got
+        return got
 
     def mask_fp(self, bi, oi):
         """Footprint-union mask (MH,MW) bool = any layer touches the cell.
@@ -3032,18 +3256,42 @@ class _Raster:
             # shrink to the live maxL (perf on giants; result-transparent).
             if sign < 0 and not g.any():
                 del occ[l]
+        if self.q > 1:                      # jv17: mirror onto the 1/q grid
+            q = self.q
+            fmask, fx0, fy0 = self.fmask(bi, oi)
+            nlf, MHf, MWf = fmask.shape
+            rr = (int(y) + fy0) * q; cc = (int(x) + fx0) * q
+            Hf, Wf = self.H[bay] * q, self.W[bay] * q
+            rr0 = max(0, rr); cc0 = max(0, cc)
+            rr1 = min(Hf, rr + MHf); cc1 = min(Wf, cc + MWf)
+            if rr1 > rr0 and cc1 > cc0:
+                occf = self.occf[bay]
+                for l in range(nlf):
+                    g = occf.get(l)
+                    if g is None:
+                        if sign < 0:
+                            continue
+                        g = _np.zeros((Hf, Wf), dtype=_np.int16)
+                        occf[l] = g
+                    g[rr0:rr1, cc0:cc1] += sign * fmask[
+                        l, rr0 - rr:rr1 - rr, cc0 - cc:cc1 - cc].astype(_np.int16)
+                    if sign < 0 and not g.any():
+                        del occf[l]
         self.ver[bay] += 1
 
     def reset(self):
         """Clear all occupancy (keep the mask cache) for a fresh construction."""
         for j in range(len(self.bays)):
             self.occ[j] = dict()
+            self.occf[j] = dict()
+            self._unif[j] = None
             self.ver[j] += 1
             self._uni[j] = None
             self._scan[j] = dict()
             self._fp[j] = None
             self._nearc[j] = dict()
         self._scoped.clear()                  # jv5 Phase D: scoped-union memo
+        self._scopedf.clear()                 # jv17: fine scoped-union memo
 
     def add(self, bay, bi, oi, x, y):
         self._apply(bay, bi, oi, x, y, 1)
@@ -3118,6 +3366,12 @@ class _Raster:
             win = _swv(Vk.astype(_np.int32), (MH, MW))     # (R,C,MH,MW)
             total += _np.einsum('rcij,ij->rc', win, mk.astype(_np.int32))
         feas = (total == 0)
+        # jv17: starving block -> consult the 1/q mask before declaring the
+        # bay closed to it. This is the admission frontier (100% of measured
+        # tardiness is entry delay), and it is the only place the extra
+        # resolution changes a decision, so the cost stays negligible.
+        if self.q > 1 and (bi == self._wide or int(feas.sum()) < self.r_min):
+            self._rescue(bay, bi, oi, total, feas)
         self._scan[bay][(bi, oi)] = (self.ver[bay], feas, cx0, cy0)
         if self.near_enabled:
             # v20: near-miss anchors from the same count grid (byproduct).
@@ -3226,10 +3480,56 @@ class _Raster:
                 continue
             win = _swv(Vk.astype(_np.int32), (MH, MW))
             total += _np.einsum('rcij,ij->rc', win, mk.astype(_np.int32))
+        feas_s = (total == 0)
+        if self.q > 1 and int(feas_s.sum()) < self.r_min:
+            self._rescue(bay, bi, oi, total, feas_s,
+                         unions_fine=self._scoped_union_fine(bay, actives))
         if want_near:
-            return ((total == 0), cx0, cy0, occ_fp,
+            return (feas_s, cx0, cy0, occ_fp,
                     _np.logical_and(total > 0, total <= self.near_k))
-        return (total == 0), cx0, cy0, occ_fp
+        return feas_s, cx0, cy0, occ_fp
+
+    def _scoped_union_fine(self, bay, actives):
+        """jv17: fine (1/q) layer unions for `actives` only -- the rescue
+        counterpart of _scoped_union. Small LRU-ish cache; built only when a
+        scoped repair scan starves."""
+        q = self.q
+        Hf, Wf = self.H[bay] * q, self.W[bay] * q
+        akey = (bay, tuple(actives))
+        hit = self._scopedf.get(akey)
+        if hit is not None:
+            return hit
+        layers = {}
+        maxL = -1
+        for (b2, o2, x2, y2) in actives:
+            m2, c2x, c2y = self.fmask(b2, o2)
+            nl2, MH2, MW2 = m2.shape
+            r = (int(y2) + c2y) * q; c = (int(x2) + c2x) * q
+            r0 = max(0, r); c0 = max(0, c)
+            r1 = min(Hf, r + MH2); c1 = min(Wf, c + MW2)
+            if r1 <= r0 or c1 <= c0:
+                continue
+            for l in range(nl2):
+                g = layers.get(l)
+                if g is None:
+                    g = _np.zeros((Hf, Wf), dtype=bool); layers[l] = g
+                g[r0:r1, c0:c1] |= m2[l, r0 - r:r1 - r, c0 - c:c1 - c].astype(bool)
+            if nl2 - 1 > maxL:
+                maxL = nl2 - 1
+        if maxL < 0:
+            res = []
+        else:
+            res = [None] * (maxL + 1)
+            cum = _np.zeros((Hf, Wf), dtype=bool)
+            for l in range(maxL, -1, -1):
+                g = layers.get(l)
+                if g is not None:
+                    cum = cum | g
+                res[l] = cum
+        if len(self._scopedf) >= 256:
+            self._scopedf.clear()
+        self._scopedf[akey] = res
+        return res
 
 
 # =============================================================================
@@ -3640,6 +3940,10 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
         if occ:
             util = float(raster.footprint(bay_id).sum()) / max(1.0, area)
         s = w3 * (max(prefs) - prefs[bay_id]) + gamma * w1 * util
+        if _Z3T is not None:
+            tb = _Z3T.get(bi)
+            if tb is not None and tb != bay_id:
+                s += _Z3B
         return s
 
     def _drain_score(bi, bay_id, x, y, oi, look):
@@ -4133,6 +4437,14 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
                     look = [b for b in ordered[pos + 1:]
                             if targets is None or t >= targets[b]][:drain]
                 place = try_place(bi, t, cc, look=look)
+                if place is None and _WIDE_RETRY and raster is not None:
+                    # jv17b: this block is about to be deferred = tardiness.
+                    # Re-scan it with the rescue fully open and a bigger exact
+                    # gate budget before giving up. Costs nothing on the
+                    # (overwhelming) majority of admissions that succeed.
+                    raster.widen(bi)
+                    place = try_place(bi, t, min(96, cc * 4), look=look)
+                    raster.widen(None)
                 if place is None and steals_left:
                     place = try_steal(bi, t, cc)
                     steals_left = 0 if place is not None else steals_left - 1
@@ -4153,6 +4465,10 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
         # else fall back to the guaranteed empty-bay force placement.
         t = rels[bi]
         place = try_place(bi, t, cand_cap)
+        if place is None and _WIDE_RETRY and raster is not None:
+            raster.widen(bi)                  # jv17b: last chance before the
+            place = try_place(bi, t, min(96, cand_cap * 4))   # empty-bay dump
+            raster.widen(None)
         if place is None:
             place = _force_place(bi, blk, bays, sched)
         commit(bi, place)
@@ -4671,6 +4987,14 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                 inbox = None
             wid = 3
         else:
+            # jv15 NG-DEAF probe (env-gated, default off = jv9-identical): on
+            # NON-giant cells the original wid 7 replica drops its inbox and
+            # polishes its own basin to the deadline -- the jv9 deaf-giant
+            # mechanism (independent-basin draw capture) applied to the
+            # variance non-giants (31/33/30/32 carry ~800k single-shot-vs-
+            # composed draw gap). jv13 killed broadcast-off for GIANTS only.
+            if (wid == 7 and _z3os.environ.get("OGC_NG_DEAF", "") not in ("", "0")):
+                inbox = None
             wid = (1, 3, 2)[(wid - 4) % 3]  # jv9: wid 7 -> second W1 replica
 
     def iobj(assign):
