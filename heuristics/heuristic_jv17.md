@@ -87,7 +87,37 @@ ones already have anchors and need the scan budget for polish depth. Hence
 **Measured-cell total: +4,710,940** vs jv9 (which single-shots 122,728,934) →
 projected ≈ 118.0M with 31 cells still unmeasured. Aggregate z1 falls on every
 class, which is the mechanism working as diagnosed. No feasibility failures
-and no empty-fallbacks anywhere. Full-40 single-shot running to confirm.
+and no empty-fallbacks anywhere.
+
+## FULL-40 SINGLE-SHOT (confirmed): **118,297,918 = +4,431,016 (−3.61%) vs jv9**
+
+40/40 feasible, per-instance isolation @750s (results.csv row `jv17 FULL-40
+SINGLE-SHOT`). The projection held almost exactly. Goal 115M → gap 3.30M.
+
+Biggest movers: 31 +1,111,355 · 28 +944,149 · 37 +471,922 · 27 +451,655 ·
+39 +392,393 · 32 +320,511 || 23 −195,480 · 30 −69,080 · 26 −57,967 ·
+38 −36,550.
+
+Caveats worth keeping honest:
+- Cells 1–34 ran while the machine had other user work on it, and the jv9
+  reference row came from a quiet run — the comparison is biased AGAINST jv17,
+  so 118.3M is a **conservative floor**.
+- **Per-cell variance is large on exactly the big cells**: 38 measured
+  +2,575,535 in a paired A/B but −36,550 here; 26 measured +724,042 paired but
+  −57,967 here; 27 measured −15,002 paired but +451,655 here. jv17's own values
+  reproduce well (31 bit-identical to its A/B, 33 within 0.07%) — the swing is
+  mostly jv9's own draw variance. Paired adjacent A/B is the trustworthy
+  instrument; single-shot rows compare across sessions.
+- prob_35's first entry was invalid (killed mid-run: 2105s vs the 750s limit,
+  obj3=0 fallback) and was re-run clean.
+
+## Next (jv17b, built, default OFF pending A/B)
+
+`OGC_WIDE_RETRY=1`: rescue currently fires on the *proxy* "fewer than r_min
+anchors". The exact signal is an admission that actually FAILED — a deferred
+block is a unit of tardiness about to be paid. On failure, re-scan that one
+block with rescue fully open (4× r_max, 8× r_cap) and a 4× exact-gate budget
+before deferring. Costs nothing on the admissions that succeed.
 
 ## Consequence
 
