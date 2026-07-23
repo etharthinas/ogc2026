@@ -569,6 +569,12 @@ _RESCUE_MIN = 128  # rescue when the unit scan yields < this many anchors
 _RESCUE_MAX = 48   # consider anchors whose unit-overlap count is <= this
 _RESCUE_CAP = 512  # max anchors fine-checked per scan (cheapest-overlap first)
 _RESCUE_ENV = False   # True when the operator pinned the width by env (probes)
+# jv17b WIDE RETRY (OGC_WIDE_RETRY=1): when an admission actually fails, re-scan
+# that one block with the rescue fully open (4x r_max, 8x r_cap) and a 4x exact
+# gate budget before deferring it. Failure is the exact signal that the r_min
+# anchor-count trigger only approximates. Default OFF so jv17 stays byte-equal
+# to the configuration measured on 2026-07-23 until this is A/B'd.
+_WIDE_RETRY = False
 try:
     _RQ = int(_z3os.environ.get("OGC_RASTER_Q", "4"))
     _RESCUE_ENV = any(_z3os.environ.get(k) for k in
@@ -576,6 +582,7 @@ try:
     _RESCUE_MIN = int(_z3os.environ.get("OGC_RESCUE_MIN", "128"))
     _RESCUE_MAX = int(_z3os.environ.get("OGC_RESCUE_MAX", "48"))
     _RESCUE_CAP = int(_z3os.environ.get("OGC_RESCUE_CAP", "512"))
+    _WIDE_RETRY = _z3os.environ.get("OGC_WIDE_RETRY", "") not in ("", "0")
 except Exception:
     _RQ = 4
 
@@ -3020,6 +3027,7 @@ class _Raster:
             self.r_min, self.r_max, self.r_cap = 8, 12, 96
         if _RESCUE_ENV:
             self.r_min, self.r_max, self.r_cap = _RESCUE_MIN, _RESCUE_MAX, _RESCUE_CAP
+        self._wide = None    # block id currently granted the widest rescue
         self._maskf = {}                      # (bi, oi) -> fine (mask, cx0, cy0)
         self.occf = [dict() for _ in bays]    # bay -> {layer: int16 fine grid}
         self._unif = [None for _ in bays]     # bay -> (ver, [fine union_ge])
@@ -3142,6 +3150,22 @@ class _Raster:
         self._unif[bay] = (self.ver[bay], union_ge)
         return union_ge
 
+    def widen(self, bi):
+        """jv17b: grant block `bi` the widest possible rescue on its next scans
+        (and drop its cached scans so they recompute). Called by the dispatcher
+        only when an admission has ALREADY FAILED -- failure is the exact signal
+        the r_min anchor-count heuristic only approximates, and a deferred block
+        is precisely a unit of tardiness about to be paid. `widen(None)` clears.
+        The wider result is a sound superset, so caching it is safe."""
+        if self.q <= 1 or bi == self._wide:
+            return
+        self._wide = bi
+        if bi is not None:
+            for j in range(len(self.bays)):
+                sc = self._scan[j]
+                for key in [k for k in sc if k[0] == bi]:
+                    del sc[key]
+
     def _rescue(self, bay, bi, oi, total, feas, unions_fine=None):
         """jv17: fine-check the cheapest anchors the UNIT scan rejected and
         flip the ones that are genuinely clear at 1/q resolution. `total` is
@@ -3150,13 +3174,16 @@ class _Raster:
         Returns the number of anchors recovered."""
         if self.q <= 1:
             return 0
-        cand = _np.logical_and(total > 0, total <= self.r_max)
+        wide = (bi == self._wide)
+        r_max = self.r_max * 4 if wide else self.r_max
+        r_cap = self.r_cap * 8 if wide else self.r_cap
+        cand = _np.logical_and(total > 0, total <= r_max)
         idx = _np.flatnonzero(cand.ravel())
         if idx.size == 0:
             return 0
-        if idx.size > self.r_cap:                     # cheapest overlap first
+        if idx.size > r_cap:                          # cheapest overlap first
             tv = total.ravel()[idx]
-            idx = idx[_np.argpartition(tv, self.r_cap - 1)[:self.r_cap]]
+            idx = idx[_np.argpartition(tv, r_cap - 1)[:r_cap]]
         uf = self._unions_fine(bay) if unions_fine is None else unions_fine
         if not uf:
             return 0
@@ -3343,7 +3370,7 @@ class _Raster:
         # bay closed to it. This is the admission frontier (100% of measured
         # tardiness is entry delay), and it is the only place the extra
         # resolution changes a decision, so the cost stays negligible.
-        if self.q > 1 and int(feas.sum()) < self.r_min:
+        if self.q > 1 and (bi == self._wide or int(feas.sum()) < self.r_min):
             self._rescue(bay, bi, oi, total, feas)
         self._scan[bay][(bi, oi)] = (self.ver[bay], feas, cx0, cy0)
         if self.near_enabled:
@@ -4410,6 +4437,14 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
                     look = [b for b in ordered[pos + 1:]
                             if targets is None or t >= targets[b]][:drain]
                 place = try_place(bi, t, cc, look=look)
+                if place is None and _WIDE_RETRY and raster is not None:
+                    # jv17b: this block is about to be deferred = tardiness.
+                    # Re-scan it with the rescue fully open and a bigger exact
+                    # gate budget before giving up. Costs nothing on the
+                    # (overwhelming) majority of admissions that succeed.
+                    raster.widen(bi)
+                    place = try_place(bi, t, min(96, cc * 4), look=look)
+                    raster.widen(None)
                 if place is None and steals_left:
                     place = try_steal(bi, t, cc)
                     steals_left = 0 if place is not None else steals_left - 1
@@ -4430,6 +4465,10 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
         # else fall back to the guaranteed empty-bay force placement.
         t = rels[bi]
         place = try_place(bi, t, cand_cap)
+        if place is None and _WIDE_RETRY and raster is not None:
+            raster.widen(bi)                  # jv17b: last chance before the
+            place = try_place(bi, t, min(96, cand_cap * 4))   # empty-bay dump
+            raster.widen(None)
         if place is None:
             place = _force_place(bi, blk, bays, sched)
         commit(bi, place)
