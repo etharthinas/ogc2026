@@ -1,0 +1,17 @@
+
+prob_38: w1=13333
+    h0: obj=40,116,025 (o1=2,895)  [22s elapsed]
+    h1: obj=40,116,025 (o1=2,895)  [40s elapsed]
+   h1a: obj=39,738,543 (o1=2,863)  [56s elapsed]
+  => h1 +0 [flat] | h1a -377,482 [SIGNAL]
+
+prob_27: w1=13333
+    h0: obj=27,304,744 (o1=1,908)  [5s elapsed]
+    h1: obj=27,304,744 (o1=1,908)  [8s elapsed]
+   h1a: obj=27,304,744 (o1=1,908)  [10s elapsed]
+  => h1 +0 [flat] | h1a +0 [flat]
+
+============================================================
+SUMMARY (starvation guard vs off, raw non-beam dispatch):
+  prob_38: h1 +0 | h1a -377,482
+  prob_27: h1 +0 | h1a +0

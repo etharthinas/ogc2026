@@ -145,6 +145,55 @@ decision-sized deltas. Every new mechanism behind a default-off env switch.
   space across exit waves until the claimant fits. Self-limiting (skipped
   blocks re-enter as their slack burns). Untested: probe_hold.py ready
   (arms h0/h1 conservative/h1a aggressive, cells 38 27).
+### *** THE BUG (07-24): the drain build NEVER RAN, in any shipped version ***
+
+`_run_strategy`'s local `dispatch()` wrapper has NEVER had a `drain`
+parameter — not in jv6b, jv9, jv17, jv18, nor in the promoted submission
+entry point `myalgorithm.py`. The jv6b-r7 "FORCE drain seed" call
+(`dispatch(1.0, 0.5, alpha=0.0, beam=True, nearmiss=8, nk=32, drain=8, ...)`)
+sits inside `try: ... except Exception: pass`, so every invocation since
+2026-07-18 raised `TypeError: dispatch() got an unexpected keyword argument
+'drain'` and was silently swallowed. Verified by signature inspection across
+all four modules plus a direct call reproduction.
+
+This is the SAME defect class the v25 mpc bug had (and whose fix the jv5
+header brags about) — a dead kwarg behind a bare except. Consequences:
+- Every "drain" verdict in the campaign record is VOID. jv6b r6/r7's
+  "absorbed by polish", and this session's own memory note "drain=8 is
+  ALREADY SHIPPED in W0 reclaim on {27,38,39}", measured a no-op.
+- Route A2 ("drain never runs on mid-cells") was accidentally right for the
+  wrong reason: drain never ran ANYWHERE.
+- LESSON (evolve.md "compare what the code BELIEVES against ground truth"):
+  a mechanism gated behind `except Exception: pass` must assert it ran.
+
+### jv19 bundle (all three legs measured as raw signals, A/B pending)
+
+1. **drain forwarding FIX** — `dispatch()` takes and forwards `drain`; the
+   r7 giant seed-force now actually fires, bounded by `_o3 <= 1.3 * _o0`
+   (r7's intent was "structure over ~10% worse raw", not "any complete
+   assignment": an over-budget build force-places its tail and would feed
+   the deep pipeline garbage). Fires on reclaim cells {27,38,39,37,40}.
+2. **rlook additive** (`_RLOOK=2, _RLOOK_K=4, _RLOOK_MODE=0`) — probe_rlook
+   07-24 with budget headroom, vs plain drain=8: **38 -1,696,368**,
+   **27 -1,765,971** (both SIGNAL). The cost-neutral BLEND mode is WORSE
+   (38 +212k, 27 -1.29M) → additive adopted, blend kept behind MODE=1.
+   Combined with the drain fix, raw giants: 38 40.12M→37.40M (-2.72M),
+   27 27.30M→25.59M (-1.72M).
+3. **mid-cell drain tickets** (`_MIDDRAIN=1`) — one drain=8 ticket heading
+   the W2 forced lottery (fires {26,31,33,30,23,32,25}), plus one on the
+   contended non-forced branch (overload>0.55 → {28,35,34,36,21}).
+   probe_drain_mid raw: 26 -1,155,571, 28 -1,394,238, 30 -477,712,
+   31 -115,993, 33 -17,715.
+
+REJECTED into default-off: **starvation guard** (`OGC_HOLD`, built + probed).
+h1 (K=1.0,AMIN=1.4) never fires (bit-identical on both giants); h1a
+(K=0.5,AMIN=1.2) is 38 -377,482 / 27 +0. One-cell weak signal, no bundle.
+
+Smoke: jv19 runs end-to-end feasible; A/B on 28 @120s is a bit-identical TIE
+(the polish there reaches 2,551,624, BELOW every raw construction 2.64M+, so
+W2's construction change is invisible — the jv6b "absorbed by polish" law is
+real on cells where W2 is not the winning worker).
+
 - **jv19 BUILT 07-24 (Route A1, release lookahead)**: `myalgorithm_jv19.py` =
   jv17 + imminent releases in the drain look-set. Blocks releasing in
   (t, t+OGC_RLOOK] (default 2 ticks) join `look` at both admission sites

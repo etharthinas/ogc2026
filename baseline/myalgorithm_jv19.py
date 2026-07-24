@@ -604,6 +604,10 @@ _RLOOK_MODE = 0
 _HOLD = 0
 _HOLD_K = 1.0
 _HOLD_AMIN = 1.4
+# jv19 Route A2 (OGC_MIDDRAIN, default ON -- this module is the A/B arm):
+# one drain=8 ticket heading the wid==2 forced mid-cell lottery. See the
+# plan-site comment for the probe numbers.
+_MIDDRAIN = 1
 try:
     _RQ = int(_z3os.environ.get("OGC_RASTER_Q", "4"))
     _RESCUE_ENV = any(_z3os.environ.get(k) for k in
@@ -618,6 +622,7 @@ try:
     _HOLD = int(_z3os.environ.get("OGC_HOLD", "0"))
     _HOLD_K = float(_z3os.environ.get("OGC_HOLD_K", "1.0"))
     _HOLD_AMIN = float(_z3os.environ.get("OGC_HOLD_AMIN", "1.4"))
+    _MIDDRAIN = int(_z3os.environ.get("OGC_MIDDRAIN", "1"))
 except Exception:
     _RQ = 4
 
@@ -5220,7 +5225,15 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
 
     def dispatch(kappa, gamma, drng=None, alpha=0.0, score_pos=True,
                  tspec=None, beam=False, dl=None, nearmiss=0,
-                 nk=3, mpc=False, ovh=False, steal=0, nm_compete=False):
+                 nk=3, mpc=False, ovh=False, steal=0, nm_compete=False,
+                 drain=0):
+        # jv19 BUG FIX (lineage-wide, jv6b..jv18): `drain` was never a
+        # parameter here, so the r7 "FORCE drain seed" call below raised
+        # TypeError inside its try/except and the drain mechanism NEVER ran
+        # in any shipped build -- the exact v25-mpc dead-kwarg pattern the
+        # comment below warns about. probe 07-24 (direct _dispatch_construct,
+        # single worker raw): drain=8 is -1.02M on 38, -1.16M on 26,
+        # -1.39M on 28, -478k on 30.
         # jv5: nk/mpc/ovh added (mirrors ticket() at the W1 slot). reset()
         # bumps the version + clears the near/scan caches, so setting near_k
         # AFTER it is the stale-cache-free idiom; near_k is normalized on
@@ -5235,7 +5248,8 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                                 alpha=alpha, score_pos=score_pos,
                                 targets=fluid_tgt(tspec), beam=beam,
                                 nearmiss=nearmiss, mpc=mpc, ovh=ovh,
-                                steal=steal, nm_compete=nm_compete)
+                                steal=steal, nm_compete=nm_compete,
+                                drain=drain)
         o = iobj(a)
         push(o, a)
         return o, a
@@ -5503,7 +5517,13 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                             print(f"[drain] raw={_o3:,.0f} "
                                   f"parent_min={_o0:,.0f} (FORCED seed)",
                                   flush=True)
-                        if a3 is not None and len(a3) == len(blocks_data):
+                        # jv19: the seed-force now actually fires (dispatch
+                        # forwards drain for the first time). Sanity-bound it:
+                        # r7's intent was "structure over ~10% worse raw", not
+                        # "any complete assignment" -- a budget-blown build
+                        # force-places its tail and would feed garbage.
+                        if (a3 is not None and len(a3) == len(blocks_data)
+                                and _o3 <= 1.3 * _o0):
                             _o0, a0 = _o3, a3          # FORCE drain seed
                     except Exception:
                         pass
@@ -5691,6 +5711,16 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                 # the last base ticket past cap on 37 ONLY (gate = {37});
                 # the 37 spot A/B measures exactly this trade.
                 plan = [(0.5, 0.5, None, "steal2")] + plan
+            if _MIDDRAIN and not reclaim:
+                # jv19 Route A2: ONE drain ticket HEADING the forced mid-cell
+                # rotation (probe_drain_mid 07-24, single-worker raw, exact
+                # probe config k=1.0 g=0.5 a=0.0 nearmiss=8 non-beam:
+                # 26 -1,155,571 / 28 -1,394,238 / 30 -477,712 / 31 -115,993 /
+                # 33 -17,715). Heading per the 30a/steal37 lesson. The
+                # basin-diversity harvest polish (cycles 2-3 seed from alts)
+                # polishes this construction even when it is not the raw min.
+                # Gate: not reclaim (giants get the forced W0 drain seed).
+                plan = [(0.0, 1.0, None, "drain8")] + plan
             for al, ka, ts_, bm in plan:
                 try:
                     # beam tickets are capped at the lottery boundary so a slow
@@ -5705,6 +5735,10 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                         cands.append(dispatch(ka, 0.5, alpha=al, beam=True,
                                               dl=cap, nearmiss=8, nk=32,
                                               drng=random.Random(9099 + soff)))
+                    elif bm == "drain8":
+                        # exact probe_drain_mid winner config (non-beam)
+                        cands.append(dispatch(1.0, 0.5, alpha=0.0, dl=cap,
+                                              nearmiss=8, drain=8))
                     else:
                         cands.append(dispatch(ka, 0.5, alpha=al, tspec=ts_,
                                               beam=bm, dl=cap if bm else None))
@@ -5717,6 +5751,20 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                 cands.append(dispatch(1.0, 0.5))
             except Exception:
                 pass
+            if _MIDDRAIN and overload > 0.55:
+                # jv19 Route A2 on the CONTENDED non-forced cells (train:
+                # {28,35,34,36,21}). probe_drain_mid 07-24 measured the
+                # strongest whole mid-cell signal here: 28 raw 4,032,193 ->
+                # 2,637,955 (-1,394,238). Gated on overload because drain
+                # buys queue-throughput, which only exists under contention.
+                # min-wins over `cands` makes a worse build free (only its
+                # build time is spent), so the cap bounds the downside.
+                try:
+                    cands.append(dispatch(1.0, 0.5, alpha=0.0, nearmiss=8,
+                                          drain=8,
+                                          dl=t_start + 0.45 * window))
+                except Exception:
+                    pass
         if cands:
             # v14: W2 is the repack-heavy worker (giants + overloaded prob_27).
             # v15 r2a: runner-up constructions re-seed harvest cycles 2-3.

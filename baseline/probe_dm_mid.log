@@ -1,0 +1,38 @@
+
+prob_26: w1=13333
+     d0: obj=10,836,508 (o1=761)  [8s elapsed]
+     d8: obj=9,680,937 (o1=674)  [58s elapsed]
+   d8r2: obj=10,206,562 (o1=710)  [107s elapsed]
+  => drain delta -1,155,571  [SIGNAL] | rlook delta +525,625  [flat]
+
+prob_31: w1=13333
+     d0: obj=9,836,130 (o1=549)  [12s elapsed]
+     d8: obj=9,720,137 (o1=533)  [73s elapsed]
+   d8r2: obj=9,296,643 (o1=510)  [137s elapsed]
+  => drain delta -115,993  [SIGNAL] | rlook delta -423,494  [SIGNAL]
+
+prob_33: w1=6667
+     d0: obj=8,649,694 (o1=1,192)  [19s elapsed]
+     d8: obj=8,631,979 (o1=1,177)  [69s elapsed]
+   d8r2: obj=8,746,619 (o1=1,197)  [113s elapsed]
+  => drain delta -17,715  [SIGNAL] | rlook delta +114,640  [flat]
+
+prob_30: w1=13333
+     d0: obj=4,815,762 (o1=326)  [4s elapsed]
+     d8: obj=4,338,050 (o1=290)  [19s elapsed]
+   d8r2: obj=4,371,321 (o1=289)  [36s elapsed]
+  => drain delta -477,712  [SIGNAL] | rlook delta +33,271  [flat]
+
+prob_28: w1=13333
+     d0: obj=4,032,193 (o1=247)  [3s elapsed]
+     d8: obj=2,637,955 (o1=136)  [16s elapsed]
+   d8r2: obj=3,213,057 (o1=174)  [31s elapsed]
+  => drain delta -1,394,238  [SIGNAL] | rlook delta +575,102  [flat]
+
+============================================================
+SUMMARY (single-worker raw dispatch, deltas vs previous arm):
+  prob_26: drain -1,155,571 | rlook +525,625
+  prob_31: drain -115,993 | rlook -423,494
+  prob_33: drain -17,715 | rlook +114,640
+  prob_30: drain -477,712 | rlook +33,271
+  prob_28: drain -1,394,238 | rlook +575,102

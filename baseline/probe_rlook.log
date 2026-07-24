@@ -1,0 +1,17 @@
+
+prob_38: w1=13333
+     d8: obj=39,091,646 (o1=2,822)  [56s]
+    add: obj=37,395,278 (o1=2,666)  [57s]
+  blend: obj=39,303,833 (o1=2,805)  [46s]
+  => add -1,696,368 [SIGNAL] | blend +212,187 [flat]
+
+prob_27: w1=13333
+     d8: obj=27,351,666 (o1=1,888)  [9s]
+    add: obj=25,585,695 (o1=1,769)  [11s]
+  blend: obj=26,063,554 (o1=1,800)  [9s]
+  => add -1,765,971 [SIGNAL] | blend -1,288,112 [SIGNAL]
+
+============================================================
+SUMMARY (rlook modes vs plain drain=8, raw non-beam dispatch):
+  prob_38: add -1,696,368 | blend +212,187
+  prob_27: add -1,765,971 | blend -1,288,112
