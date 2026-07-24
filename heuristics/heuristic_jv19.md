@@ -93,11 +93,58 @@ decision-sized deltas. Every new mechanism behind a default-off env switch.
 
 ## Results (running log)
 
-- jv18 wide-retry A/B: RESTARTED 07-24 (first attempt 07-23 was killed with
-  zero pairs banked; ab_jv18_wide.log confirmed 0 bytes before restart).
-- deferral audit 38/27: PENDING (queued after the A/B frees the machine:
-  bench_dump myalgorithm_jv17 750 38 27, then probe_deferral_audit
-  --cap=20 --probe-entry on both dumps).
+- **jv18 wide-retry A/B: REJECTED 07-24** (restarted after the 07-23 kill;
+  paired @750s, quiet machine, ab_jv18_wide.log): 38 EXACT TIE
+  (34,180,997 both), 27 weighted +15k but lex-WORSE (z1 1620 vs 1618),
+  31 **-343,025**. Total jv17 65,024,818 vs jv18 65,352,863 (-328k), lex
+  2-0-1 for jv17. Wide-retry opens the rescue when admission fails, and it
+  either changes nothing (38) or trades z1 up for z2 down at a loss (31).
+  Consistent with the audit's "frontier near-exact" verdict: failures are
+  real fullness, not phantom. jv18 is DEAD; jv17 stays SOTA base.
+- **deferral audit 38/27: DONE 07-24 — VERDICT: FULL** (jv17 750s dumps,
+  --cap=20 --probe-entry; audit_jv17_38.log / audit_jv17_27.log):
+  - prob_38: FULL 19/20 audited tardy blocks = **99.9%** of audited
+    weighted tardiness; the single OPEN was 1 tick late (13k). True max-bay
+    density at FULL moments: min 0.59 / med 0.65 / max 0.69.
+  - prob_27: FULL 17/20 = **97.9%**; OPENs = 2×1-tick + blk 113 (20 ticks
+    late, 293k — the one real frontier miss, unexplained).
+  - Tardy blocks wait 55-85 ticks release→entry with the bay genuinely FULL
+    the whole stretch at true density only ~0.6 — **a third of the bay area
+    is trapped in unusable fragments for 3-4 residency generations.**
+  - CONCLUSION: finer/exact frontier machinery is DEAD (jv16 already died on
+    throughput; jv18 wide-retry died -328k; audit now shows there is ~nothing
+    to see). The giant pool is 100% FRAGMENTATION + WHO-IS-RESIDENT →
+    Route A (drain shaping, measured next), Route B (make-room; its audit
+    precondition "long FULL stretches at density <=0.65" is MET), Route C
+    (triage).
+- Reasoned-dead (no build): within-event "failed-block look-set" (add the
+  just-deferred block to later placements' look) — zero score
+  differentiation: space only shrinks within an event, so a block FULL
+  everywhere at t stays FULL for every candidate, cnt contribution is 0
+  either way. The temporal version of this idea is the already-shipped
+  exit-cohort zone sort. Preserving holes for a FAILED block needs future
+  exits modeled → that is exactly Route B's make-room, not a look-set tweak.
+- **Tardy-block anatomy (07-24, jv17 dumps)**: top-20 tardy blocks are
+  1.96x/1.82x mean bbox area (38/27); on-time blocks are 0.74x/0.75x. Tardy
+  larges enter at t=70-108 while the release stream ends at t=47 — they are
+  fully starved until drain-down. The engine's triage already sacrifices
+  them; the loss is that NOTHING reserves the freed fragments for them.
+- **probe_dm_giants 07-24 (single-worker raw, drain=8 base, 120s/arm)**:
+  - prob_27: rlook additive **-1,765,971 SIGNAL** (d8 27,351,666 ->
+    d8r2 25,585,695); drain itself +47k flat vs d0 at this config.
+  - prob_38: drain **-1,024,379 SIGNAL** vs d0; rlook +446M is a BUDGET
+    ARTIFACT (d8 needs 107s of the 120s budget; +50% look cost overran ->
+    force-placed tail, o1 36,346). NOT a quality verdict -> re-probe with
+    headroom + cost-neutral BLEND mode (probe_rlook.py, _RLOOK_MODE=1:
+    imminent replaces the look tail, cost == plain d8).
+- **probe_dm_mid 07-24 (partial)**: prob_26 drain **-1,155,571 SIGNAL**
+  (Route A2 alive on mid-cells); rlook additive +526k flat there.
+- **STARVATION GUARD built (OGC_HOLD, default OFF)** in myalgorithm_jv19.py:
+  when a late large (anorm >= 1.4) block fails admission, slack-rich blocks
+  (slack >= 1.0*pbar) are skipped for the rest of the event, banking freed
+  space across exit waves until the claimant fits. Self-limiting (skipped
+  blocks re-enter as their slack burns). Untested: probe_hold.py ready
+  (arms h0/h1 conservative/h1a aggressive, cells 38 27).
 - **jv19 BUILT 07-24 (Route A1, release lookahead)**: `myalgorithm_jv19.py` =
   jv17 + imminent releases in the drain look-set. Blocks releasing in
   (t, t+OGC_RLOOK] (default 2 ticks) join `look` at both admission sites

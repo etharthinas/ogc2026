@@ -1,0 +1,17 @@
+
+prob_38: w1=13333
+     d0: obj=40,116,025 (o1=2,895)  [63s elapsed]
+     d8: obj=39,091,646 (o1=2,822)  [170s elapsed]
+   d8r2: obj=485,677,672 (o1=36,346)  [291s elapsed]
+  => drain delta -1,024,379  [SIGNAL] | rlook delta +446,586,026  [flat]
+
+prob_27: w1=13333
+     d0: obj=27,304,744 (o1=1,908)  [14s elapsed]
+     d8: obj=27,351,666 (o1=1,888)  [39s elapsed]
+   d8r2: obj=25,585,695 (o1=1,769)  [61s elapsed]
+  => drain delta +46,922  [flat] | rlook delta -1,765,971  [SIGNAL]
+
+============================================================
+SUMMARY (single-worker raw dispatch, deltas vs previous arm):
+  prob_38: drain -1,024,379 | rlook +446,586,026
+  prob_27: drain +46,922 | rlook -1,765,971

@@ -1,0 +1,26 @@
+== prob_27.myalgorithm_jv17.json (obj=23,664,560 z1=1618.0) w1=13333
+  tardy+deferred blocks: 69  (auditing 20; tard sum all=1618, audited=1030)
+    blk  51 rel=  14 entry=  91 due=  44 tard=  74 dens@rel=0.59/0.59 -> FULL(rel..entry sampled)
+    blk 112 rel=  16 entry=  93 due=  53 tard=  68 dens@rel=0.59/0.62 -> FULL(rel..entry sampled)
+    blk 113 rel=  28 entry= 108 due=  65 tard=  68 dens@rel=0.61/0.67 -> OPEN@t=88 (entry 108, 20 ticks late)
+    blk 103 rel=  10 entry=  75 due=  34 tard=  63 dens@rel=0.54/0.49 -> FULL(rel..entry sampled)
+    blk  48 rel=  23 entry=  94 due=  57 tard=  62 dens@rel=0.61/0.63 -> FULL(rel..entry sampled)
+    blk  66 rel=  23 entry=  92 due=  58 tard=  61 dens@rel=0.61/0.63 -> FULL(rel..entry sampled)
+    blk 119 rel=  14 entry=  82 due=  53 tard=  56 dens@rel=0.59/0.59 -> FULL(rel..entry sampled)
+    blk  55 rel=  33 entry=  92 due=  66 tard=  55 dens@rel=0.58/0.63 -> FULL(rel..entry sampled)
+    blk  10 rel=  28 entry=  83 due=  58 tard=  53 dens@rel=0.61/0.67 -> FULL(rel..entry sampled)
+    blk  40 rel=  25 entry=  78 due=  52 tard=  51 dens@rel=0.59/0.64 -> FULL(rel..entry sampled)
+    blk  58 rel=  22 entry=  70 due=  47 tard=  48 dens@rel=0.58/0.65 -> OPEN@t=69 (entry 70, 1 ticks late)
+    blk  74 rel=  29 entry=  84 due=  63 tard=  48 dens@rel=0.61/0.66 -> FULL(rel..entry sampled)
+    blk 106 rel=  21 entry=  71 due=  45 tard=  47 dens@rel=0.58/0.64 -> FULL(rel..entry sampled)
+    blk 110 rel=  29 entry=  75 due=  58 tard=  44 dens@rel=0.61/0.66 -> FULL(rel..entry sampled)
+    blk  13 rel=  29 entry=  75 due=  52 tard=  42 dens@rel=0.61/0.66 -> FULL(rel..entry sampled)
+    blk  17 rel=  10 entry=  62 due=  50 tard=  41 dens@rel=0.54/0.49 -> FULL(rel..entry sampled)
+    blk 135 rel=  24 entry=  72 due=  53 tard=  40 dens@rel=0.59/0.62 -> FULL(rel..entry sampled)
+    blk  20 rel=  30 entry=  70 due=  62 tard=  37 dens@rel=0.63/0.63 -> FULL(rel..entry sampled)
+    blk  33 rel=  25 entry=  70 due=  56 tard=  37 dens@rel=0.59/0.64 -> OPEN@t=69 (entry 70, 1 ticks late)
+    blk   1 rel=  14 entry=  57 due=  48 tard=  35 dens@rel=0.59/0.59 -> FULL(rel..entry sampled)
+  == RESULT: OPEN 3/20 blocks (2.1% of audited tardiness = 293,326 weighted) | FULL 17 (97.9%)
+     max-bay true density at OPEN moments: min=0.64 med=0.65 max=0.67
+     max-bay true density at FULL moments: min=0.54 med=0.63 max=0.67
+     audit scan time 244.5s

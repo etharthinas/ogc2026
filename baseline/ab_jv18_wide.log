@@ -1,0 +1,9 @@
+prob_38: myalgorithm_jv17[total=34,180,997 z1=2419 z2=2735 z3=6410] (703.2s)
+         myalgorithm_jv18[total=34,180,997 z1=2419 z2=2735 z3=6410] (703.2s) | lex=tie weighted_delta(A-B)=+0
+prob_27: myalgorithm_jv17[total=23,664,560 z1=1618 z2=1083 z3=5224] (690.3s)
+         myalgorithm_jv18[total=23,649,580 z1=1620 z2=260 z3=5124] (690.5s) | lex=myalgorithm_jv17 weighted_delta(A-B)=+14,980
+prob_31: myalgorithm_jv17[total=7,179,261 z1=333 z2=3989 z3=10215] (692.2s)
+         myalgorithm_jv18[total=7,522,286 z1=362 z2=5732 z3=10032] (693.7s) | lex=myalgorithm_jv17 weighted_delta(A-B)=-343,025
+------------------------------------------------------------------------------------------
+myalgorithm_jv17 total=65,024,818   myalgorithm_jv18 total=65,352,863   improvement=-328,045
+obj1 sums: myalgorithm_jv17=4,370 myalgorithm_jv18=4,401 | lex wins myalgorithm_jv17=2 myalgorithm_jv18=0 ties=1

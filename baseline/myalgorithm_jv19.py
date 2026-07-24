@@ -583,6 +583,27 @@ _WIDE_RETRY = False
 # cost grows at most ~1.5x. ON by default in jv19: this module IS the A/B arm.
 _RLOOK = 2
 _RLOOK_K = 4
+# _RLOOK_MODE 0 = ADDITIVE (look grows to drain+K entries, ~1.5x drain-score
+# cost; probe 07-24: 27 raw -1,765,971 but 38 overran a 120s single-worker
+# budget); 1 = BLEND (imminent replaces the last K queued-tail entries, look
+# stays `drain` entries -- byte-identical cost to plain drain).
+_RLOOK_MODE = 0
+# jv19 STARVATION GUARD (OGC_HOLD=1, default OFF): deferral audit 07-24 —
+# 98-100% of giant tardiness is genuine FULLness at true density ~0.6 for
+# 55-85 ticks; tardy blocks are 1.8-2.0x mean footprint while on-time blocks
+# are 0.75x. Mechanism: slack-rich small releases instantly consume every
+# freed fragment, so large blocks starve until the release stream dries up.
+# Guard: when a LATE (entry-tardy), LARGE (anorm >= _HOLD_AMIN) block fails
+# admission at t, subsequent slack-rich blocks (slack >= _HOLD_K * pbar) are
+# NOT admitted this event — freed space banks across exit waves until the
+# claimant fits. Self-limiting: a skipped block re-enters admission once its
+# own slack burns below the threshold, so the guard cannot manufacture new
+# tardiness (unlike the offline fluid gate, measured -13..22M realization
+# penalty). Distinct from drain/look: this REFUSES placements, look SCORES
+# them.
+_HOLD = 0
+_HOLD_K = 1.0
+_HOLD_AMIN = 1.4
 try:
     _RQ = int(_z3os.environ.get("OGC_RASTER_Q", "4"))
     _RESCUE_ENV = any(_z3os.environ.get(k) for k in
@@ -593,6 +614,10 @@ try:
     _WIDE_RETRY = _z3os.environ.get("OGC_WIDE_RETRY", "") not in ("", "0")
     _RLOOK = int(_z3os.environ.get("OGC_RLOOK", "2"))
     _RLOOK_K = int(_z3os.environ.get("OGC_RLOOK_K", "4"))
+    _RLOOK_MODE = int(_z3os.environ.get("OGC_RLOOK_MODE", "0"))
+    _HOLD = int(_z3os.environ.get("OGC_HOLD", "0"))
+    _HOLD_K = float(_z3os.environ.get("OGC_HOLD_K", "1.0"))
+    _HOLD_AMIN = float(_z3os.environ.get("OGC_HOLD_AMIN", "1.4"))
 except Exception:
     _RQ = 4
 
@@ -4350,11 +4375,15 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
             if time.time() > deadline:
                 break
             committed = []
+            hold_C = None                     # jv19 starvation-guard claimant
             for pos, bi in enumerate(od):
                 if time.time() > deadline:
                     break
                 if targets is not None and t < targets[bi]:
                     continue
+                if (hold_C is not None
+                        and dues[bi] - procs[bi] - t >= _HOLD_K * pbar):
+                    continue    # jv19 guard: slack-rich, bank the space
                 # jv6b drain lookahead inside the beam fill: the next `drain`
                 # blocks in this order (release-passed) are the ones this
                 # placement must not foreclose.
@@ -4363,11 +4392,19 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
                     look = [b for b in od[pos + 1:]
                             if targets is None or t >= targets[b]][:drain]
                     if _RLOOK:
-                        look += _imminent(t)   # jv19 release lookahead
+                        imm = _imminent(t)     # jv19 release lookahead
+                        if imm and _RLOOK_MODE == 1:
+                            look = look[:max(0, drain - len(imm))] + imm
+                        else:
+                            look += imm
                 place = try_place(bi, t, cc, look=look)
                 if place is not None:
                     commit(bi, place)         # trial: mutate only, no bookkeeping
                     committed.append((bi, place))
+                elif (_HOLD and hold_C is None
+                      and t > dues[bi] - procs[bi]
+                      and anorm[bi] >= _HOLD_AMIN):
+                    hold_C = bi   # late large block starving: start banking
             key = evaluate(committed)
             if best is None or key < best[0]:
                 best = (key, list(committed))
@@ -4454,11 +4491,15 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
             beam_admit(t, ordered, cc)
         else:
             steals_left = 2 if steal else 0   # jv6b: bounded attempts/event
+            hold_C = None                     # jv19 starvation-guard claimant
             for pos, bi in enumerate(ordered):
                 if time.time() > deadline:
                     break
                 if targets is not None and t < targets[bi]:
                     continue    # round-3 GATE: hold until the fluid target
+                if (hold_C is not None
+                        and dues[bi] - procs[bi] - t >= _HOLD_K * pbar):
+                    continue    # jv19 guard: slack-rich, bank the space
                 # jv6b drain lookahead: the next `drain` more-urgent queued
                 # blocks (after bi) whose release has passed -- the ones this
                 # placement must not foreclose.
@@ -4467,7 +4508,11 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
                     look = [b for b in ordered[pos + 1:]
                             if targets is None or t >= targets[b]][:drain]
                     if _RLOOK:
-                        look += _imminent(t)   # jv19 release lookahead
+                        imm = _imminent(t)     # jv19 release lookahead
+                        if imm and _RLOOK_MODE == 1:
+                            look = look[:max(0, drain - len(imm))] + imm
+                        else:
+                            look += imm
                 place = try_place(bi, t, cc, look=look)
                 if place is None and _WIDE_RETRY and raster is not None:
                     # jv17b: this block is about to be deferred = tardiness.
@@ -4482,6 +4527,10 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
                     steals_left = 0 if place is not None else steals_left - 1
                 if place is not None:
                     apply_place(bi, place)
+                elif (_HOLD and hold_C is None
+                      and t > dues[bi] - procs[bi]
+                      and anorm[bi] >= _HOLD_AMIN):
+                    hold_C = bi   # late large block starving: start banking
         # if the queue still holds blocks and no future event will free space,
         # inject a probe event so they get force-placed below.
         if queue and not heap:
