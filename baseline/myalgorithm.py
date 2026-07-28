@@ -1,25 +1,3 @@
-# myalgorithm_41.py -- v41 = v40 + HARD RETURN-BY-DEADLINE GUARANTEE. Every
-# post-race tail stage (merge pool build/recombine/replay, tail35 pair loop,
-# t37 pool build + per-round realize/verify, and every caller-side official
-# check) is now bounded by the true deadline, with reserves scaled by the
-# MEASURED check_feasibility cost (cf_cost) so half-speed machines cannot
-# overrun (v40 defect: prob_26 @1800s returned at 2104s). Fast-path (~0.15s
-# cf) constants are unchanged. See heuristics/heuristic_41 notes.
-# ---------------------------------------------------------------------------
-# (v40 header, kept verbatim)
-# myalgorithm_40.py -- v40 = v39 + 39b MERGE-ON-FORCED (recombine pool on giants
-# before tail35/t37). See heuristics/heuristic_40.md.
-# ---------------------------------------------------------------------------
-# (v39 header, kept verbatim)
-# myalgorithm_39.py -- v39 = jv9 + v35/v36/v37/v38 tail stack (cross-fork merge).
-# Vendored from myalgorithm_38.py: _tail35_cpsat (in-tail joint frozen CP-SAT on
-# forced), the _t37_* order-tail island + _T37Model (v37, with v38's dropped w1
-# gate + bands k=6), v36 budget-capped portfolio pacing (port_limit=min(tl,600),
-# overflow-to-tail) and both v38 call sites (forced: tail35+tail37; non-forced:
-# post-merge tail37). Base jv9 search/worker code unchanged except the worker
-# spawn arg timelimit->port_limit. See heuristics/heuristic_39.md.
-# ---------------------------------------------------------------------------
-# (jv9 header, kept verbatim)
 # myalgorithm_jv9.py  --  jv9 = jv8 + FULL-WIDTH PORTFOLIO + DEAF REPLICA.
 # nw -> min(8, cpu) everywhere (jv8 tie-evidence: widening leaves incumbent
 # draws bit-identical, contention ~0). W7 = second W1-slot replica on
@@ -542,6 +520,25 @@ import math
 import time
 import random
 import re  # v33: parse block ids from check_feasibility violation strings
+import os as _z3os
+import json as _z3json
+
+# jv15: LP-target bay-membership bias (env-gated; default OFF = jv9-identical).
+# OGC_Z3_TARGET = path to {block_id: bay_id} json (CP-SAT assignment optimum);
+# OGC_Z3_BONUS  = penalty added to bay_score for non-target bays (objective
+# units; large => hard following). Loaded once at import for probe use.
+_Z3T = None
+_Z3B = 0.0
+try:
+    _p = _z3os.environ.get("OGC_Z3_TARGET")
+    _Z3B = float(_z3os.environ.get("OGC_Z3_BONUS", "0") or 0.0)
+    if _p and _Z3B > 0.0 and _z3os.path.exists(_p):
+        _Z3T = {int(k): int(v) for k, v in _z3json.load(open(_p)).items()}
+except Exception:
+    _Z3T = None
+# OGC_Z3_REPACK: fire the xbay Z3 group relocation on zero-tardy cells (the
+# jv9 gate best_tardy>0 kept ~2M of w3*Z3 pool untouched on 22/29/24/20-class).
+_Z3RP = _z3os.environ.get("OGC_Z3_REPACK", "") not in ("", "0")
 
 try:
     import numpy as _np
@@ -551,6 +548,43 @@ except Exception:  # pragma: no cover
     _np = None
     _swv = None
     _HAVE_NUMPY = False
+
+# jv17 SUBCELL RESCUE parameters (see _Raster). The unit-grid mask marks a cell
+# occupied when a polygon merely TOUCHES it, dilating every fractional-vertex
+# block by up to one cell per edge; measured true polygon density at the peak
+# moments that force ALL tardiness is only 0.48-0.70 while the engine reads
+# "full". jv16 rasterised everything at 1/q and lost 6.5x throughput (prob_38
+# collapsed). Here the unit scan stays EXACTLY jv9 (same cost, same numbers)
+# and the 1/q mask is consulted only when a block is starving for anchors --
+# the admission frontier, where the tardiness is actually decided.
+# Tuned 2026-07-23, prob_38 @750s A/B vs jv9 (the sweep is unimodal -- rescue
+# buys density, but every rescued anchor costs scan throughput, and on a giant
+# throughput is what finds the basin):
+#   8/12/96     +209,898
+#   32/24/192   +1,787,358
+#   128/48/512  +2,575,535   <- adopted
+#   always-on (MIN=inf, 64/1024)  +1,729,439  (throughput collapse begins)
+_RQ = 0            # subcells per unit axis (0/1 = disabled -> byte-exact jv9)
+_RESCUE_MIN = 128  # rescue when the unit scan yields < this many anchors
+_RESCUE_MAX = 48   # consider anchors whose unit-overlap count is <= this
+_RESCUE_CAP = 512  # max anchors fine-checked per scan (cheapest-overlap first)
+_RESCUE_ENV = False   # True when the operator pinned the width by env (probes)
+# jv17b WIDE RETRY (OGC_WIDE_RETRY=1): when an admission actually fails, re-scan
+# that one block with the rescue fully open (4x r_max, 8x r_cap) and a 4x exact
+# gate budget before deferring it. Failure is the exact signal that the r_min
+# anchor-count trigger only approximates. Default OFF so jv17 stays byte-equal
+# to the configuration measured on 2026-07-23 until this is A/B'd.
+_WIDE_RETRY = False
+try:
+    _RQ = int(_z3os.environ.get("OGC_RASTER_Q", "4"))
+    _RESCUE_ENV = any(_z3os.environ.get(k) for k in
+                      ("OGC_RESCUE_MIN", "OGC_RESCUE_MAX", "OGC_RESCUE_CAP"))
+    _RESCUE_MIN = int(_z3os.environ.get("OGC_RESCUE_MIN", "128"))
+    _RESCUE_MAX = int(_z3os.environ.get("OGC_RESCUE_MAX", "48"))
+    _RESCUE_CAP = int(_z3os.environ.get("OGC_RESCUE_CAP", "512"))
+    _WIDE_RETRY = _z3os.environ.get("OGC_WIDE_RETRY", "") not in ("", "0")
+except Exception:
+    _RQ = 4
 
 from utils import (
     Bay, Block,
@@ -1057,6 +1091,8 @@ def _place_block(bi, blk, bays, sched, bay_loads, bay_u, w1, w2, w3,
                      for j in range(n_bays) if j != bay_id), default=0.0)
         sc = (w1 * tardiness + w2 * imbal + w3 * (s_max - prefs[bay_id])
               + 1e-4 * top_y)
+        if _Z3T is not None and _Z3T.get(bi, bay_id) != bay_id:
+            sc += _Z3B
         if util_gamma > 0.0 and entry is not None:
             bay = bays[bay_id]
             sc += util_gamma * w1 * _window_util(
@@ -1065,6 +1101,10 @@ def _place_block(bi, blk, bays, sched, bay_loads, bay_u, w1, w2, w3,
 
     if bay_order is None:
         bay_order = sorted(range(n_bays), key=lambda j: prefs[j], reverse=True)
+    if _Z3T is not None:
+        _tb = _Z3T.get(bi)
+        if _tb is not None and 0 <= _tb < n_bays:
+            bay_order = [_tb] + [j for j in bay_order if j != _tb]
     best_score = float("inf")
     best = None
 
@@ -2483,14 +2523,19 @@ def _improve(prob_info, assignments, bays, bay_u, w1, w2, w3, deadline, forced,
                 pass
         # Early stop: nothing tardy left and the search has stalled -> the obj2/
         # obj3 part is exhausted; stop instead of burning the rest of the budget.
-        if best_tardy == 0 and since_best > 40:
+        # jv15 (OGC_Z3_REPACK): on zero-tardy cells the xbay Z3 group relocation
+        # below never fired (best_tardy>0 gate) -- with the flag on, keep going
+        # and let the obj-gate decide.
+        if best_tardy == 0 and since_best > 40 and not _Z3RP:
             break
         rounds += 1
         # v14: JOINT WINDOW REPACK round (obj-gated, tardy instances only). Every
         # `repack_every`-th round, destroy+rebuild a whole congested (bay,window)
         # jointly instead of the classic scattered destroy/repair. repack_every==0
         # (W0 + v13-basin tickets) skips this entirely -> byte-exact v13.
-        if (repack_every > 0 and raster is not None and best_tardy > 0
+        _z3rp_fire = (_Z3RP and best_tardy == 0 and n_bays >= 2)
+        if (repack_every > 0 and raster is not None
+                and (best_tardy > 0 or _z3rp_fire)
                 and rounds % repack_every == 0):
             # v15: alternate single-bay / cross-bay round-robin. First fire is
             # single-bay (== v14); cross-bay every other fire when enabled. The
@@ -2498,7 +2543,9 @@ def _improve(prob_info, assignments, bays, bay_u, w1, w2, w3, deadline, forced,
             # v16 `deep` (reclaimed instances only): destroy cap 30 -> 45 and
             # the window scale rotates per fire over {2,1,3,4}*pbar.
             mode = 'sbay'
-            if xbay and n_bays >= 2 and (repack_idx % 2 == 1):
+            if _z3rp_fire:
+                mode = 'xbay'   # z1=0: only the Z3 group relocation can pay
+            elif xbay and n_bays >= 2 and (repack_idx % 2 == 1):
                 mode = 'xbay'
             ws = repack_win_scale
             md = 30
@@ -2963,6 +3010,28 @@ class _Raster:
         self.occ = [dict() for _ in bays]     # bay -> {layer: int16 grid (H,W)}
         self.ver = [0 for _ in bays]          # occupancy version per bay
         self._uni = [None for _ in bays]      # bay -> (ver, [union_ge grids])
+        # jv17 subcell layer: a PARALLEL 1/q occupancy, maintained alongside the
+        # unit one and consulted only by the rescue path in scan/scan_scoped.
+        self.q = _RQ if (_RQ and _RQ > 1) else 1
+        # Rescue width is SIZE-ADAPTIVE (measured 2026-07-23, A/B @750s vs jv9):
+        #   prob_38 n=250: 8/12/96 +209,898 | 32/24/192 +1,787,358 |
+        #                  128/48/512 +2,575,535 | always-on +1,729,439
+        #   prob_31 n=200: 8/12/96 +705,603  | 128/48/512 +425,869
+        # Big instances are admission-starved -- every extra legal anchor pays.
+        # Smaller ones already have anchors, so a wide rescue only spends the
+        # scan budget that their deeper polish needs. Env vars override both.
+        n_blk = len(self.blocks_data)
+        if n_blk >= 250:
+            self.r_min, self.r_max, self.r_cap = 128, 48, 512
+        else:
+            self.r_min, self.r_max, self.r_cap = 8, 12, 96
+        if _RESCUE_ENV:
+            self.r_min, self.r_max, self.r_cap = _RESCUE_MIN, _RESCUE_MAX, _RESCUE_CAP
+        self._wide = None    # block id currently granted the widest rescue
+        self._maskf = {}                      # (bi, oi) -> fine (mask, cx0, cy0)
+        self.occf = [dict() for _ in bays]    # bay -> {layer: int16 fine grid}
+        self._unif = [None for _ in bays]     # bay -> (ver, [fine union_ge])
+        self.rescued = 0                      # diagnostics: anchors recovered
         # v13 throughput caches (transparent -- same numeric results as v12):
         self._scan = [dict() for _ in bays]   # bay -> {(bi,oi): (ver, feas,cx0,cy0)}
         self._fp = [None for _ in bays]       # bay -> (ver, footprint bool grid)
@@ -2981,6 +3050,7 @@ class _Raster:
         # by (bay, actives); pure memoization, byte-identical output.
         self._scoped = {}                     # (bay, tuple(actives)) -> (maxL, union_ge, occ_fp)
         self._SCOPED_CAP = 4096
+        self._scopedf = {}                    # jv17: fine scoped unions (rescue)
 
     # -- mask construction -----------------------------------------------------
     def mask(self, bi, oi):
@@ -3016,6 +3086,138 @@ class _Raster:
         m = (mask, cx0, cy0)
         self._mask[key] = m
         return m
+
+    def fmask(self, bi, oi):
+        """jv17: 1/q SUBCELL mask (nl, MH*q, MW*q) uint8 with the same
+        (cx0, cy0) unit anchor mapping as mask(). Closed-subcell conservative
+        (a subcell is set iff the layer polygon touches it), so subcell
+        disjointness still PROVES no positive-area overlap and no crane-path
+        conflict -- the rescue is sound in exactly the same sense as the unit
+        mask, just ~q times less dilated. Commits remain exact-gated by
+        _can_place. Built lazily; only blocks that actually starve get one."""
+        key = (bi, oi)
+        m = self._maskf.get(key)
+        if m is not None:
+            return m
+        import shapely
+        q = self.q
+        layers = _resolve_layers(self.blocks_data[bi]["shape"][oi]["layers"])
+        allv = [v for L in layers for v in L]
+        if not allv:
+            m = (_np.zeros((1, q, q), dtype=_np.uint8), 0, 0)
+            self._maskf[key] = m
+            return m
+        xs = [v[0] for v in allv]; ys = [v[1] for v in allv]
+        cx0 = int(math.floor(min(xs))); cx1 = int(math.ceil(max(xs))) - 1
+        cy0 = int(math.floor(min(ys))); cy1 = int(math.ceil(max(ys))) - 1
+        if cx1 < cx0: cx1 = cx0
+        if cy1 < cy0: cy1 = cy0
+        MW = (cx1 - cx0 + 1) * q; MH = (cy1 - cy0 + 1) * q
+        mask = _np.zeros((len(layers), MH, MW), dtype=_np.uint8)
+        step = 1.0 / q
+        CX, CY = _np.meshgrid(cx0 + step * _np.arange(MW),
+                              cy0 + step * _np.arange(MH))
+        boxes = shapely.box(CX, CY, CX + step, CY + step)
+        for l, L in enumerate(layers):
+            p = _poly_from_verts(L)
+            if p is None:
+                continue
+            mask[l] = shapely.intersects(boxes, p).astype(_np.uint8)
+        m = (mask, cx0, cy0)
+        self._maskf[key] = m
+        return m
+
+    def _unions_fine(self, bay):
+        """Fine analogue of _unions(): union of present layers >= k on the 1/q
+        grid. Cached per (bay, ver); built only when a rescue needs it."""
+        cache = self._unif[bay]
+        if cache is not None and cache[0] == self.ver[bay]:
+            return cache[1]
+        occ = self.occf[bay]
+        q = self.q
+        H, W = self.H[bay] * q, self.W[bay] * q
+        if not occ:
+            self._unif[bay] = (self.ver[bay], [])
+            return []
+        maxL = max(occ.keys())
+        union_ge = [None] * (maxL + 1)
+        cum = _np.zeros((H, W), dtype=bool)
+        for l in range(maxL, -1, -1):
+            g = occ.get(l)
+            if g is not None:
+                cum = cum | (g > 0)
+            union_ge[l] = cum
+        self._unif[bay] = (self.ver[bay], union_ge)
+        return union_ge
+
+    def widen(self, bi):
+        """jv17b: grant block `bi` the widest possible rescue on its next scans
+        (and drop its cached scans so they recompute). Called by the dispatcher
+        only when an admission has ALREADY FAILED -- failure is the exact signal
+        the r_min anchor-count heuristic only approximates, and a deferred block
+        is precisely a unit of tardiness about to be paid. `widen(None)` clears.
+        The wider result is a sound superset, so caching it is safe."""
+        if self.q <= 1 or bi == self._wide:
+            return
+        self._wide = bi
+        if bi is not None:
+            for j in range(len(self.bays)):
+                sc = self._scan[j]
+                for key in [k for k in sc if k[0] == bi]:
+                    del sc[key]
+
+    def _rescue(self, bay, bi, oi, total, feas, unions_fine=None):
+        """jv17: fine-check the cheapest anchors the UNIT scan rejected and
+        flip the ones that are genuinely clear at 1/q resolution. `total` is
+        the unit overlap-count grid, `feas` the (R,C) bool grid to update in
+        place. `unions_fine` overrides the bay occupancy (scoped repair path).
+        Returns the number of anchors recovered."""
+        if self.q <= 1:
+            return 0
+        wide = (bi == self._wide)
+        r_max = self.r_max * 4 if wide else self.r_max
+        r_cap = self.r_cap * 8 if wide else self.r_cap
+        cand = _np.logical_and(total > 0, total <= r_max)
+        idx = _np.flatnonzero(cand.ravel())
+        if idx.size == 0:
+            return 0
+        if idx.size > r_cap:                          # cheapest overlap first
+            tv = total.ravel()[idx]
+            idx = idx[_np.argpartition(tv, r_cap - 1)[:r_cap]]
+        uf = self._unions_fine(bay) if unions_fine is None else unions_fine
+        if not uf:
+            return 0
+        fmask, fcx0, fcy0 = self.fmask(bi, oi)
+        nlf, MHf, MWf = fmask.shape
+        maxLf = len(uf) - 1
+        Hf, Wf = self.H[bay] * self.q, self.W[bay] * self.q
+        C = feas.shape[1]
+        got = 0
+        for flat in idx:
+            r, c = divmod(int(flat), C)
+            # window (r,c) is the UNIT anchor; the fine mask uses the same
+            # (cx0,cy0) offset convention, so the fine window starts at r*q.
+            rf = r * self.q
+            cf = c * self.q
+            if rf < 0 or cf < 0 or rf + MHf > Hf or cf + MWf > Wf:
+                continue
+            clear = True
+            for k in range(min(nlf, maxLf + 1)):
+                Vk = uf[k]
+                if Vk is None:
+                    continue
+                mk = fmask[k]
+                if not mk.any():
+                    continue
+                if _np.any(_np.logical_and(Vk[rf:rf + MHf, cf:cf + MWf],
+                                           mk.astype(bool))):
+                    clear = False
+                    break
+            if clear:
+                feas[r, c] = True
+                got += 1
+        self.rescued += got
+        return got
 
     def mask_fp(self, bi, oi):
         """Footprint-union mask (MH,MW) bool = any layer touches the cell.
@@ -3054,18 +3256,42 @@ class _Raster:
             # shrink to the live maxL (perf on giants; result-transparent).
             if sign < 0 and not g.any():
                 del occ[l]
+        if self.q > 1:                      # jv17: mirror onto the 1/q grid
+            q = self.q
+            fmask, fx0, fy0 = self.fmask(bi, oi)
+            nlf, MHf, MWf = fmask.shape
+            rr = (int(y) + fy0) * q; cc = (int(x) + fx0) * q
+            Hf, Wf = self.H[bay] * q, self.W[bay] * q
+            rr0 = max(0, rr); cc0 = max(0, cc)
+            rr1 = min(Hf, rr + MHf); cc1 = min(Wf, cc + MWf)
+            if rr1 > rr0 and cc1 > cc0:
+                occf = self.occf[bay]
+                for l in range(nlf):
+                    g = occf.get(l)
+                    if g is None:
+                        if sign < 0:
+                            continue
+                        g = _np.zeros((Hf, Wf), dtype=_np.int16)
+                        occf[l] = g
+                    g[rr0:rr1, cc0:cc1] += sign * fmask[
+                        l, rr0 - rr:rr1 - rr, cc0 - cc:cc1 - cc].astype(_np.int16)
+                    if sign < 0 and not g.any():
+                        del occf[l]
         self.ver[bay] += 1
 
     def reset(self):
         """Clear all occupancy (keep the mask cache) for a fresh construction."""
         for j in range(len(self.bays)):
             self.occ[j] = dict()
+            self.occf[j] = dict()
+            self._unif[j] = None
             self.ver[j] += 1
             self._uni[j] = None
             self._scan[j] = dict()
             self._fp[j] = None
             self._nearc[j] = dict()
         self._scoped.clear()                  # jv5 Phase D: scoped-union memo
+        self._scopedf.clear()                 # jv17: fine scoped-union memo
 
     def add(self, bay, bi, oi, x, y):
         self._apply(bay, bi, oi, x, y, 1)
@@ -3140,6 +3366,12 @@ class _Raster:
             win = _swv(Vk.astype(_np.int32), (MH, MW))     # (R,C,MH,MW)
             total += _np.einsum('rcij,ij->rc', win, mk.astype(_np.int32))
         feas = (total == 0)
+        # jv17: starving block -> consult the 1/q mask before declaring the
+        # bay closed to it. This is the admission frontier (100% of measured
+        # tardiness is entry delay), and it is the only place the extra
+        # resolution changes a decision, so the cost stays negligible.
+        if self.q > 1 and (bi == self._wide or int(feas.sum()) < self.r_min):
+            self._rescue(bay, bi, oi, total, feas)
         self._scan[bay][(bi, oi)] = (self.ver[bay], feas, cx0, cy0)
         if self.near_enabled:
             # v20: near-miss anchors from the same count grid (byproduct).
@@ -3248,10 +3480,56 @@ class _Raster:
                 continue
             win = _swv(Vk.astype(_np.int32), (MH, MW))
             total += _np.einsum('rcij,ij->rc', win, mk.astype(_np.int32))
+        feas_s = (total == 0)
+        if self.q > 1 and int(feas_s.sum()) < self.r_min:
+            self._rescue(bay, bi, oi, total, feas_s,
+                         unions_fine=self._scoped_union_fine(bay, actives))
         if want_near:
-            return ((total == 0), cx0, cy0, occ_fp,
+            return (feas_s, cx0, cy0, occ_fp,
                     _np.logical_and(total > 0, total <= self.near_k))
-        return (total == 0), cx0, cy0, occ_fp
+        return feas_s, cx0, cy0, occ_fp
+
+    def _scoped_union_fine(self, bay, actives):
+        """jv17: fine (1/q) layer unions for `actives` only -- the rescue
+        counterpart of _scoped_union. Small LRU-ish cache; built only when a
+        scoped repair scan starves."""
+        q = self.q
+        Hf, Wf = self.H[bay] * q, self.W[bay] * q
+        akey = (bay, tuple(actives))
+        hit = self._scopedf.get(akey)
+        if hit is not None:
+            return hit
+        layers = {}
+        maxL = -1
+        for (b2, o2, x2, y2) in actives:
+            m2, c2x, c2y = self.fmask(b2, o2)
+            nl2, MH2, MW2 = m2.shape
+            r = (int(y2) + c2y) * q; c = (int(x2) + c2x) * q
+            r0 = max(0, r); c0 = max(0, c)
+            r1 = min(Hf, r + MH2); c1 = min(Wf, c + MW2)
+            if r1 <= r0 or c1 <= c0:
+                continue
+            for l in range(nl2):
+                g = layers.get(l)
+                if g is None:
+                    g = _np.zeros((Hf, Wf), dtype=bool); layers[l] = g
+                g[r0:r1, c0:c1] |= m2[l, r0 - r:r1 - r, c0 - c:c1 - c].astype(bool)
+            if nl2 - 1 > maxL:
+                maxL = nl2 - 1
+        if maxL < 0:
+            res = []
+        else:
+            res = [None] * (maxL + 1)
+            cum = _np.zeros((Hf, Wf), dtype=bool)
+            for l in range(maxL, -1, -1):
+                g = layers.get(l)
+                if g is not None:
+                    cum = cum | g
+                res[l] = cum
+        if len(self._scopedf) >= 256:
+            self._scopedf.clear()
+        self._scopedf[akey] = res
+        return res
 
 
 # =============================================================================
@@ -3662,6 +3940,10 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
         if occ:
             util = float(raster.footprint(bay_id).sum()) / max(1.0, area)
         s = w3 * (max(prefs) - prefs[bay_id]) + gamma * w1 * util
+        if _Z3T is not None:
+            tb = _Z3T.get(bi)
+            if tb is not None and tb != bay_id:
+                s += _Z3B
         return s
 
     def _drain_score(bi, bay_id, x, y, oi, look):
@@ -4155,6 +4437,14 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
                     look = [b for b in ordered[pos + 1:]
                             if targets is None or t >= targets[b]][:drain]
                 place = try_place(bi, t, cc, look=look)
+                if place is None and _WIDE_RETRY and raster is not None:
+                    # jv17b: this block is about to be deferred = tardiness.
+                    # Re-scan it with the rescue fully open and a bigger exact
+                    # gate budget before giving up. Costs nothing on the
+                    # (overwhelming) majority of admissions that succeed.
+                    raster.widen(bi)
+                    place = try_place(bi, t, min(96, cc * 4), look=look)
+                    raster.widen(None)
                 if place is None and steals_left:
                     place = try_steal(bi, t, cc)
                     steals_left = 0 if place is not None else steals_left - 1
@@ -4175,6 +4465,10 @@ def _dispatch_construct(prob_info, bays, bay_u, w1, w2, w3, deadline, raster,
         # else fall back to the guaranteed empty-bay force placement.
         t = rels[bi]
         place = try_place(bi, t, cand_cap)
+        if place is None and _WIDE_RETRY and raster is not None:
+            raster.widen(bi)                  # jv17b: last chance before the
+            place = try_place(bi, t, min(96, cand_cap * 4))   # empty-bay dump
+            raster.widen(None)
         if place is None:
             place = _force_place(bi, blk, bays, sched)
         commit(bi, place)
@@ -4693,6 +4987,14 @@ def _run_strategy(wid, prob_info, timelimit, t_start, push, inbox=None):
                 inbox = None
             wid = 3
         else:
+            # jv15 NG-DEAF probe (env-gated, default off = jv9-identical): on
+            # NON-giant cells the original wid 7 replica drops its inbox and
+            # polishes its own basin to the deadline -- the jv9 deaf-giant
+            # mechanism (independent-basin draw capture) applied to the
+            # variance non-giants (31/33/30/32 carry ~800k single-shot-vs-
+            # composed draw gap). jv13 killed broadcast-off for GIANTS only.
+            if (wid == 7 and _z3os.environ.get("OGC_NG_DEAF", "") not in ("", "0")):
+                inbox = None
             wid = (1, 3, 2)[(wid - 4) % 3]  # jv9: wid 7 -> second W1 replica
 
     def iobj(assign):
@@ -5821,20 +6123,15 @@ def _merge_precompute_pairs(raster, bays, blocks_data, pool, deadline):
 
 
 def _merge_recombine(prob_info, bays, bay_u, w1, w2, w3, pool, incompat_pairs,
-                     warm_assign, budget_s, abs_end=None):
+                     warm_assign, budget_s):
     """Pick one placement per block minimizing the true objective subject to the
     pairwise incompatibilities; warm-started from warm_assign. Returns a merged
-    assignment dict or None. v41: `abs_end` is an absolute wall-clock cutoff --
-    the Python model BUILD is periodically checked against it (build time used
-    to silently extend the solve past the caller's budget) and the solver cap
-    is recomputed from it IMMEDIATELY before Solve."""
+    assignment dict or None."""
     try:
         from ortools.sat.python import cp_model
     except Exception:
         return None
     if budget_s <= 0.5:
-        return None
-    if abs_end is not None and abs_end - time.time() < 1.0:
         return None
     blocks_data = prob_info["blocks"]
     n_bays = len(bays)
@@ -5844,12 +6141,7 @@ def _merge_recombine(prob_info, bays, bay_u, w1, w2, w3, pool, incompat_pairs,
     base_cost = {}
     wl_terms = [[] for _ in range(n_bays)]
     su = [int(round(SU * bay_u[j])) for j in range(n_bays)]
-    _nb_built = 0
     for bi, plist in pool.items():
-        _nb_built += 1
-        if (abs_end is not None and (_nb_built & 31) == 0
-                and time.time() > abs_end):
-            return None                       # v41: build blew the window
         vs = []
         blk = blocks_data[bi]
         due = blk["due_date"]
@@ -5904,14 +6196,7 @@ def _merge_recombine(prob_info, bays, bay_u, w1, w2, w3, pool, incompat_pairs,
                 for pp in range(len(pool[bi])):
                     m.AddHint(yv[(bi, pp)], 1 if pp == pidx else 0)
     solver = cp_model.CpSolver()
-    # v41: recompute the cap NOW -- `budget_s` was measured before the Python
-    # model build above, whose cost used to extend the solve past the window.
-    _cap_s = float(budget_s)
-    if abs_end is not None:
-        _cap_s = min(_cap_s, abs_end - time.time())
-        if _cap_s < 0.5:
-            return None
-    solver.parameters.max_time_in_seconds = _cap_s
+    solver.parameters.max_time_in_seconds = float(budget_s)
     # jv7: the merge recombine runs in the PARENT after every worker has been
     # reaped -- the whole machine is idle. Give CP-SAT all cores (was 4): the
     # merge tail is the only measured positive-yield family (-383,875), so
@@ -5943,16 +6228,11 @@ def _merge_recombine(prob_info, bays, bay_u, w1, w2, w3, pool, incompat_pairs,
     return merged
 
 
-def _merge_repair_replay(prob_info, merged, warm_assign, rounds=3,
-                         deadline=None):
+def _merge_repair_replay(prob_info, merged, warm_assign, rounds=3):
     """Rebuild ops + check_feasibility; per violating block revert to its
-    warm-start placement. Up to `rounds` passes. Returns (assign, feasible).
-    v41: `deadline` aborts further rounds -- each round is a full official
-    check_feasibility replay (seconds on n>=200), previously unbounded."""
+    warm-start placement. Up to `rounds` passes. Returns (assign, feasible)."""
     cur = {bi: dict(a) for bi, a in merged.items()}
     for _ in range(rounds + 1):
-        if deadline is not None and time.time() > deadline:
-            return cur, False
         try:
             res = check_feasibility(
                 prob_info, {"operations": _build_operations(cur)})
@@ -5973,8 +6253,6 @@ def _merge_repair_replay(prob_info, merged, warm_assign, rounds=3,
                 reverted = True
         if not reverted:
             return cur, False
-    if deadline is not None and time.time() > deadline:
-        return cur, False
     try:
         res = check_feasibility(
             prob_info, {"operations": _build_operations(cur)})
@@ -5984,8 +6262,7 @@ def _merge_repair_replay(prob_info, merged, warm_assign, rounds=3,
 
 
 def _merge_tail(prob_info, bays, bay_u, w1, w2, w3, cands, winner_assign,
-                winner_obj, t_start, timelimit, overflow=False,
-                allow_forced=False, cf_cost=1.0):
+                winner_obj, t_start, timelimit):
     """Post-race self-gating merge. Returns an improved feasible assignment if
     the gate fires AND the merge strictly beats the winner (official-verified);
     otherwise returns winner_assign unchanged (byte-identical v25 path)."""
@@ -6018,10 +6295,7 @@ def _merge_tail(prob_info, bays, bay_u, w1, w2, w3, cands, winner_assign,
     # verify keep it floor-safe.
     # jv7: default widened 24->32 -- the jv6c widening was DEAD for lack of
     # pool diversity; W4..W6 now supply genuinely new polished solutions.
-    # v36/v39: overflow (timelimit>600) hands the merge ~300s of solve, so
-    # retain a richer pool (64). At timelimit<=600 overflow is False -> 32
-    # (jv9 default), byte-identical to jv9. OGC_MERGE_CAP still overrides.
-    _cap = int(_os.environ.get("OGC_MERGE_CAP") or (64 if overflow else 32))
+    _cap = int(_os.environ.get("OGC_MERGE_CAP", "32"))
     dedup = sorted(uniq.values(), key=lambda c: c[0])[:_cap]
     k = len(dedup)
 
@@ -6036,12 +6310,8 @@ def _merge_tail(prob_info, bays, bay_u, w1, w2, w3, cands, winner_assign,
     # let the tail fire on forced rocks -- exactly the prob_27 case the
     # coordinator flagged. `_is_forced` makes "forced" a guaranteed non-firing
     # (byte-identical) case, matching requirement 5.
-    # v40 39b: allow_forced=True (forced-site caller only) opens the gate on
-    # forced instances -- jv8/jv9 giant replicas (W4..W7 + deaf) now feed a
-    # genuinely diverse pool there. Default False keeps every other caller
-    # byte-identical to v39.
     if (not _HAVE_NUMPY or remaining < MERGE_MIN or k < 3
-            or (_is_forced(prob_info, bays) and not allow_forced)):
+            or _is_forced(prob_info, bays)):
         _emit(False, 0.0)
         return winner_assign
     pool_solutions = [a for _, a in dedup]
@@ -6056,20 +6326,8 @@ def _merge_tail(prob_info, bays, bay_u, w1, w2, w3, cands, winner_assign,
         # CP-SAT budget = remaining - 2.5s safety (covers precompute + replay
         # repair + final official verify). merge_hard_stop bakes the 2.5s in, so
         # the solve deadline never blows the parent's abs_stop.
-        # v41: the post-solve chain (repair replay <=5x official check + final
-        # verify) was UNBOUNDED past merge_hard_stop -- the prob_26 @1800s
-        # +304s overrun class. Reserve room for the replay rounds + the final
-        # verify out of the same absolute window, sized by the measured
-        # check_feasibility cost `cf_cost` threaded in by the caller.
-        # reserve = the worst-case post-solve chain: replay repair (<=5 official
-        # checks) + 1 final verify ~= 6x cf_cost. On the design machine cf ~0.15s
-        # -> 6x = 0.9s < 2.5s, so the old 2.5s constant stands (byte-identical);
-        # on a slow machine the reserve grows with the MEASURED verify cost.
-        safety = max(2.5, 6.0 * cf_cost)
+        safety = 2.5
         merge_hard_stop = t_start + timelimit - safety
-        if merge_hard_stop - time.time() < 1.0:
-            _emit(True, 0.0)
-            return winner_assign
         raster = _Raster(prob_info, bays)
         pre_deadline = min(merge_hard_stop - 1.0,
                            time.time() + max(1.5, (merge_hard_stop - time.time()) * 0.45))
@@ -6077,19 +6335,14 @@ def _merge_tail(prob_info, bays, bay_u, w1, w2, w3, cands, winner_assign,
             raster, bays, blocks_data, pool, pre_deadline)
         solve_budget = merge_hard_stop - time.time()
         merged = _merge_recombine(prob_info, bays, bay_u, w1, w2, w3, pool,
-                                  incompat, winner_assign, solve_budget,
-                                  abs_end=merge_hard_stop)
+                                  incompat, winner_assign, solve_budget)
         if merged is not None:
-            _cf = max(0.3, cf_cost)
-            replay_dl = t_start + timelimit - _cf - 0.5
             repaired, feasible = _merge_repair_replay(
-                prob_info, merged, winner_assign, rounds=3,
-                deadline=replay_dl)
+                prob_info, merged, winner_assign, rounds=3)
             if feasible:
                 mobj = _objective(repaired, blocks_data, bays,
                                   bay_u, w1, w2, w3)[0]
-                if (mobj < winner_obj - 1e-9
-                        and time.time() < t_start + timelimit - _cf - 0.3):
+                if mobj < winner_obj - 1e-9:
                     if check_feasibility(
                             prob_info,
                             {"operations": _build_operations(repaired)}
@@ -6102,1008 +6355,7 @@ def _merge_tail(prob_info, bays, bay_u, w1, w2, w3, cands, winner_assign,
     return winner_assign
 
 
-def _tail35_cpsat(prob_info, champ_assign, bays, bay_u, w1, w2, w3, deadline,
-                  overflow=False):
-    """v35 FORCED obj2/obj3-only tail: SHRUNK in-tail JOINT CP-SAT over
-    TIME-FROZEN position choices. v34's single greedy relocation found NO
-    feasible move on space-saturated forced rocks (prob_31/38: 0 accepts), but
-    SWAPS / CHAINS -- A moving into B's simultaneously-vacated slot -- can still
-    be feasible. SOUNDNESS: with every entry/exit FROZEN to the champion's, the
-    replay order and co-resident sets are fixed constants; only positions vary,
-    so pairwise position-compatibility is EXACT. We reuse the S4 merge's
-    frozen-time predicate verbatim -- _merge_incompatible == the exact static
-    reduction of _can_place with both windows fixed. obj1 is invariant by
-    construction (entry/exit never touched).
-
-    SHRINK (offline model was 169 movable x 40 cands x ~975k constraints ->
-    minutes; the forced tail has ~35-50s):
-      * MOVABLE = off-preference blocks + Z2-max-bay (max normalized load)
-        blocks ONLY -- no spatial expansion -- capped at 60 by penalty desc.
-      * <=10 candidates/block: champion (index 0) then preferred-bay raster
-        anchors (scan_scoped vs FIXED blocks only, _can_place-gated vs the fixed
-        co-residents; movable-movable handled by the pairwise constraints).
-      * pairwise constraints only for TIME-OVERLAPPING movable pairs whose
-        candidates SHARE a bay (different bays never collide -> skipped).
-    Champion is candidate 0 for every block, so the model always contains the
-    identity solution: the CP-SAT optimum is never internally worse than the
-    champion. Build+solve share `deadline`; if the BUILD alone burns half the
-    remaining budget it aborts and returns the champion (time guards inside the
-    candidate loop, the pair loop, and before solve). The CALLER runs the
-    official check_feasibility + obj1-freeze assertion + strict-improvement gate.
-
-    Returns (new_assign_or_None, movable_count, cands_avg, swaps)."""
-    try:
-        from ortools.sat.python import cp_model
-    except Exception:
-        return None, 0, 0.0, 0
-    blocks_data = prob_info["blocks"]
-    n_bays = len(bays)
-    if n_bays < 2 or not _HAVE_NUMPY:
-        return None, 0, 0.0, 0
-    now0 = time.time()
-    if deadline - now0 < 3.0:
-        return None, 0, 0.0, 0
-    # TIME GUARD 1: the model BUILD must not consume more than half the budget.
-    build_stop = now0 + (deadline - now0) * 0.5
-    raster = _Raster(prob_info, bays)
-    champ = {bi: dict(a) for bi, a in champ_assign.items()}
-
-    # -- per-bay champion normalized load; Z2-max bay ------------------------
-    loads = [0.0] * n_bays
-    for bi, a in champ.items():
-        loads[a["bay_id"]] += blocks_data[bi]["workload"]
-    z2_bay = max(range(n_bays), key=lambda j: bay_u[j] * loads[j])
-
-    # -- MOVABLE: off-preference + Z2-max-bay, cap by penalty desc -----------
-    # v36: overflow (timelimit>600) gives this tail ~300s -> larger model. At
-    # timelimit<=600 overflow is False -> 60/10, byte-identical to v35.
-    MOV_CAP = 120 if overflow else 60
-    CAND_CAP = 20 if overflow else 10
-    scored = []
-    for bi, a in champ.items():
-        prefs = blocks_data[bi]["bay_preferences"]
-        pen = max(prefs) - prefs[a["bay_id"]]
-        if pen > 0 or a["bay_id"] == z2_bay:
-            scored.append((pen, bi))
-    if not scored:
-        return None, 0, 0.0, 0
-    scored.sort(reverse=True)                      # penalty desc
-    movable = [bi for _, bi in scored[:MOV_CAP]]
-    mv_set = set(movable)
-    fixed = [bi for bi in champ if bi not in mv_set]
-
-    # -- FIXED obstacle schedule per bay -------------------------------------
-    fixed_by_bay = [[] for _ in range(n_bays)]
-    for bi in fixed:
-        a = champ[bi]
-        nb = _mkblock(bi, blocks_data[bi], a["x"], a["y"], a["orient_idx"])
-        fixed_by_bay[a["bay_id"]].append((nb, a["entry_time"], a["exit_time"]))
-
-    def _tov(a1, e1, a2, e2):          # broad co-residence (present/overlap)
-        return a1 <= e2 and a2 <= e1
-
-    # -- CANDIDATE POOL per movable (champion first, preferred-bay anchors) ---
-    pool = {}
-    for bi in movable:
-        if time.time() > build_stop:               # TIME GUARD (build loop)
-            return None, len(movable), 0.0, 0
-        a = champ[bi]
-        blk = blocks_data[bi]
-        entry, exit_t = a["entry_time"], a["exit_time"]
-        prefs = blk["bay_preferences"]; s_max = max(prefs)
-        orients = _unique_orients(blk)
-        seen = set(); cands = []
-
-        def _addc(bay_id, x, y, oi):
-            key = (bay_id, x, y, oi)
-            if key in seen:
-                return
-            seen.add(key)
-            cands.append({"bi": bi, "oi": oi, "x": int(x), "y": int(y),
-                          "entry": entry, "exit": exit_t, "bay": bay_id,
-                          "pen3": s_max - prefs[bay_id]})
-
-        _addc(a["bay_id"], a["x"], a["y"], a["orient_idx"])   # champion = idx 0
-        for bay_id in sorted(range(n_bays), key=lambda j: -prefs[j]):
-            if len(cands) >= CAND_CAP:
-                break
-            bay = bays[bay_id]
-            relx = [(nb, e, xt) for (nb, e, xt) in fixed_by_bay[bay_id]
-                    if _tov(entry, exit_t, e, xt)]
-            actives = [(nb.block_id, nb.orient_idx, nb.x, nb.y)
-                       for (nb, _e, _x) in relx]
-            for oi in orients:
-                if len(cands) >= CAND_CAP:
-                    break
-                if not _orient_fits(blk, oi, bay):
-                    continue
-                feas, cx0, cy0, occ_fp = raster.scan_scoped(bay_id, actives, bi, oi)
-                if feas is None or not feas.any():
-                    continue
-                cells = _order_cells(raster, feas, cx0, cy0, bi, oi,
-                                     raster.W[bay_id], occ_fp, True, None)
-                stride = max(1, len(cells) // (CAND_CAP * 2))
-                for idx in range(0, len(cells), stride):
-                    if len(cands) >= CAND_CAP:
-                        break
-                    x, y = cells[idx]
-                    nb = _mkblock(bi, blk, x, y, oi)
-                    if _can_place(bay, relx, nb, entry, exit_t):
-                        _addc(bay_id, x, y, oi)
-        pool[bi] = cands
-
-    cands_avg = sum(len(v) for v in pool.values()) / max(1, len(movable))
-
-    # -- CP-SAT model --------------------------------------------------------
-    model = cp_model.CpModel()
-    z = {}
-    for bi in movable:
-        vs = []
-        for cidx in range(len(pool[bi])):
-            v = model.NewBoolVar(f"z_{bi}_{cidx}")
-            z[(bi, cidx)] = v; vs.append(v)
-        model.Add(sum(vs) == 1)
-        model.AddHint(z[(bi, 0)], 1)               # warm start = champion
-
-    # pairwise incompat: TIME-OVERLAPPING movable pairs, SAME-bay candidate
-    # pairs only (cross-bay pairs never interact -> skipped).
-    _pchk = 0
-    for ii in range(len(movable)):
-        if time.time() > build_stop:               # TIME GUARD (pair loop)
-            return None, len(movable), cands_avg, 0
-        bi = movable[ii]; ai = champ[bi]
-        for jj in range(ii + 1, len(movable)):
-            bj = movable[jj]; aj = champ[bj]
-            if not _tov(ai["entry_time"], ai["exit_time"],
-                        aj["entry_time"], aj["exit_time"]):
-                continue
-            # v41: guard INSIDE the jj loop too -- one outer ii covers up to
-            # MOV_CAP*CAND_CAP^2 geometry checks (~48k on overflow), which on a
-            # half-speed machine can burn tens of seconds between outer checks.
-            _pchk += 1
-            if (_pchk & 15) == 0 and time.time() > build_stop:
-                return None, len(movable), cands_avg, 0
-            for a_idx, pa in enumerate(pool[bi]):
-                pbay = pa["bay"]
-                for b_idx, pb in enumerate(pool[bj]):
-                    if pb["bay"] != pbay:
-                        continue
-                    if _merge_incompatible(raster, bays[pbay],
-                                           blocks_data, pa, pb):
-                        model.Add(z[(bi, a_idx)] + z[(bj, b_idx)] <= 1)
-
-    # objective: w3*obj3 + w2*(linearized Z2); obj1 frozen by construction.
-    SCALE = 1000; WSCALE = 1000
-    fixed_o3 = 0
-    for bi in fixed:
-        prefs = blocks_data[bi]["bay_preferences"]
-        fixed_o3 += max(prefs) - prefs[champ[bi]["bay_id"]]
-    base_load_fixed = [0.0] * n_bays
-    for bi in fixed:
-        base_load_fixed[champ[bi]["bay_id"]] += blocks_data[bi]["workload"]
-    obj3_terms = []
-    for bi in movable:
-        for cidx, c in enumerate(pool[bi]):
-            if c["pen3"]:
-                obj3_terms.append(c["pen3"] * z[(bi, cidx)])
-    Np = []
-    for p in range(n_bays):
-        terms = [int(round(SCALE * bay_u[p] * base_load_fixed[p]))]
-        for bi in movable:
-            coeff = int(round(SCALE * bay_u[p] * blocks_data[bi]["workload"]))
-            if coeff:
-                for cidx, c in enumerate(pool[bi]):
-                    if c["bay"] == p:
-                        terms.append(coeff * z[(bi, cidx)])
-        Np.append(sum(terms))
-    z2var = model.NewIntVar(0, 10 ** 12, "z2")
-    for p in range(n_bays):
-        for q in range(n_bays):
-            if p != q:
-                model.Add(z2var >= Np[p] - Np[q])
-    cW2 = int(round(w2 * WSCALE)); cW3 = int(round(w3 * WSCALE))
-    model.Minimize(cW3 * SCALE * (fixed_o3 + sum(obj3_terms)) + cW2 * z2var)
-
-    # TIME GUARD 3: hand the solver whatever remains up to the deadline.
-    solve_left = deadline - time.time()
-    if solve_left < 1.0:
-        return None, len(movable), cands_avg, 0
-    solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = solve_left
-    solver.parameters.num_search_workers = 4
-    solver.parameters.random_seed = 1
-    status = solver.Solve(model)
-    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        return None, len(movable), cands_avg, 0
-
-    # -- reconstruct (fixed keep champion, movable take the chosen candidate) -
-    new_assign = {bi: dict(a) for bi, a in champ.items()}
-    swaps = 0
-    for bi in movable:
-        chosen = pool[bi][0]
-        for cidx, c in enumerate(pool[bi]):
-            if solver.Value(z[(bi, cidx)]) == 1:
-                chosen = c; break
-        ca = champ[bi]
-        if (chosen["bay"] != ca["bay_id"] or chosen["x"] != ca["x"]
-                or chosen["y"] != ca["y"] or chosen["oi"] != ca["orient_idx"]):
-            swaps += 1
-        a = new_assign[bi]
-        a["bay_id"] = chosen["bay"]
-        a["x"] = chosen["x"]; a["y"] = chosen["y"]
-        a["orient_idx"] = chosen["oi"]
-        # entry_time / exit_time DELIBERATELY UNCHANGED.
-    if swaps == 0:
-        return None, len(movable), cands_avg, 0
-    return new_assign, len(movable), cands_avg, swaps
-
-
-# =============================================================================
-# v37 POST-RACE TAIL: replay-order-aware presence-window CP-SAT repack.
-#
-# VENDORED (self-contained) from baseline/cpsat_order.py (arm 37c). cpsat_order
-# imports myalgorithm_36 as `M.`; here the identical helpers already live in
-# THIS module, so every `M.xxx` becomes a bare local call. All vendored
-# module-level names carry a `_t37_`/`_T37` prefix to guarantee zero collision
-# with existing symbols. NO import of cpsat_order, NO file reads -> the contest
-# bundle needs only myalgorithm_37.py + utils.py.
-#
-# Mechanism: from the champion (winner after all existing tails) compute
-# queue(t) = released-but-not-entered count per tick; take the top-2
-# non-overlapping width-10 bands by peak queue; per band build the
-# presence-window model (window cap 110, same pools/pruning as cpsat_order),
-# Gate0-check the champion, solve, realize ops crane-aware (topo) + no-good
-# repair (<=3), verify with the official check_feasibility, accept only on
-# STRICT official improvement (min-wins). Hard deadline discipline throughout:
-# every solve is capped by an absolute hard_deadline that leaves >=10s slack
-# for the final ops build; the stage never overruns t_start + timelimit.
-# =============================================================================
-# ortools must NOT be imported at module level: every spawned worker
-# re-imports this module, and the extra ~1s startup latency displaces the
-# cross-worker race lotteries (v37 spot runs measured prob_37 +70,854 /
-# prob_38 basin flip vs v36 cells with an eager import here). Lazy-load in
-# the parent-side tail only.
-_cp_model = None
-_T37_CP_TRIED = False
-
-
-def _t37_cp():
-    global _cp_model, _T37_CP_TRIED
-    if not _T37_CP_TRIED:
-        _T37_CP_TRIED = True
-        try:
-            from ortools.sat.python import cp_model as m
-            _cp_model = m
-        except Exception:                             # pragma: no cover
-            _cp_model = None
-    return _cp_model
-
-# ---- tunables (mirror cpsat_order presence mode) ----------------------------
-_T37_PRESENCE_CAND_CAP = 32     # candidates per block in presence mode
-_T37_PRESENCE_ANCHORS = 8       # raster anchors per (bay, orient)
-_T37_WIN_CAP = 110              # task: window cap 110 blocks
-_T37_MAX_EARLY = 9             # earlier-entry candidate times for tardy blocks
-_T37_MAX_LATE = 12             # later-entry candidate times within free slack
-_T37_SU = 1000                 # imbalance (u_j ratio) scale
-_T37_WSCALE = 1000             # weight scale (preserves small w2 precisely)
-_T37_BAND_W = 10               # band width (ticks)
-_T37_BUILD_CAP_S = 30.0        # per-band pairwise-build cap (models ~20s)
-
-
-def _t37_window_ids(base, t1, t2, presence, win_cap):
-    if presence:
-        ids = sorted(bi for bi, a in base.items()
-                     if a["entry_time"] <= t2 and a["exit_time"] >= t1)
-    else:
-        ids = sorted(bi for bi, a in base.items()
-                     if t1 <= a["entry_time"] <= t2)
-    if len(ids) > win_cap:
-        ids = ids[:win_cap]
-    return ids
-
-
-def _t37_champ_order(bi, bj):
-    """_build_operations same-tick tie-break: lower block_id first."""
-    return bi < bj
-
-
-def _t37_entry_choices(a, blk):
-    """Asymmetric time menu for a window block given its base assignment `a`."""
-    release = int(blk["release_time"])
-    due = int(blk["due_date"])
-    proc = a["exit_time"] - a["entry_time"]
-    base = a["entry_time"]
-    tard = max(0, a["exit_time"] - due)
-
-    early = []
-    if base > release:
-        span = base - release
-        if tard > 0:
-            if span <= _T37_MAX_EARLY:
-                early = list(range(release, base))
-            else:
-                early = [release + i for i in range(0, 6)]
-                early += [release + int(span * f) for f in (0.5, 0.7, 0.85)]
-                early = sorted({t for t in early if release <= t < base})
-        else:
-            early = [base - 1]
-    late = []
-    unused_slack = (due - proc) - base
-    if unused_slack > 0:
-        late = list(range(base + 1, base + unused_slack + 1))[:_T37_MAX_LATE]
-    return sorted({base, *early, *late}), base
-
-
-def _t37_build_pool(base_assign, blocks_data, bays, raster, window_ids,
-                    fixed_ids, cand_cap, per_bay_anchors, deadline=None):
-    """One combined-candidate pool per window block; each candidate is exact-
-    gated feasible vs the FROZEN schedule (block_id tie-break). base candidate
-    is index 0. Cross-bay allowed. v41: `deadline` aborts the build (returns
-    None) -- this loop (<=110 blocks x raster scans x <=32 exact gates) had NO
-    time guard and was the dominant per-band overrun (~50-80s/band on a
-    half-speed machine; the prob_26 @1800s +304s class)."""
-    n_bays = len(bays)
-    fixed_by_bay = [[] for _ in range(n_bays)]
-    for bi in fixed_ids:
-        a = base_assign[bi]
-        nb = _mkblock(bi, blocks_data[bi], a["x"], a["y"], a["orient_idx"])
-        fixed_by_bay[a["bay_id"]].append((nb, a["entry_time"], a["exit_time"]))
-
-    pool = {}
-    for bi in window_ids:
-        if deadline is not None and time.time() > deadline:
-            return None                            # v41: band skipped cleanly
-        a = base_assign[bi]
-        blk = blocks_data[bi]
-        proc = a["exit_time"] - a["entry_time"]
-        prefs = blk["bay_preferences"]
-        s_max = max(prefs)
-        due = int(blk["due_date"])
-        orients = _unique_orients(blk)
-        choices, base_entry = _t37_entry_choices(a, blk)
-
-        seen = set()
-        cands = []
-
-        def _gate(bay_id, x, y, oi, entry):
-            if len(cands) >= cand_cap:
-                return
-            exit_t = entry + proc
-            key = (bay_id, x, y, oi, entry)
-            if key in seen:
-                return
-            bay = bays[bay_id]
-            nb = _mkblock(bi, blk, x, y, oi)
-            rel = [(fb, fe, fx) for (fb, fe, fx) in fixed_by_bay[bay_id]
-                   if _overlaps(entry, exit_t, fe, fx)
-                   or fe in (entry, exit_t) or fx in (entry, exit_t)]
-            if not _can_place(bay, rel, nb, entry, exit_t):
-                return
-            seen.add(key)
-            cands.append({"bi": bi, "bay": bay_id, "x": int(x), "y": int(y),
-                          "oi": oi, "entry": int(entry), "exit": int(exit_t),
-                          "proc": proc, "pen3": s_max - prefs[bay_id],
-                          "tard": max(0, exit_t - due)})
-
-        _gate(a["bay_id"], a["x"], a["y"], a["orient_idx"], base_entry)
-        for et in choices:
-            _gate(a["bay_id"], a["x"], a["y"], a["orient_idx"], et)
-
-        bay_order = sorted(range(n_bays), key=lambda j: -prefs[j])
-        time_priority = [base_entry] + [t for t in choices if t != base_entry]
-        for bay_id in bay_order:
-            if len(cands) >= cand_cap:
-                break
-            bay = bays[bay_id]
-            for oi in orients:
-                if not _orient_fits(blk, oi, bay):
-                    continue
-                actives = [(fb.block_id, fb.orient_idx, fb.x, fb.y)
-                           for (fb, fe, fx) in fixed_by_bay[bay_id]
-                           if _overlaps(base_entry, base_entry + proc, fe, fx)]
-                res = raster.scan_scoped(bay_id, actives, bi, oi)
-                feas, cx0, cy0, occ_fp = res
-                if feas is None or not feas.any():
-                    continue
-                cells = _order_cells(raster, feas, cx0, cy0, bi, oi,
-                                     raster.W[bay_id], occ_fp, True, None)
-                stride = max(1, len(cells) // (per_bay_anchors * 3))
-                anchors = cells[::stride][:per_bay_anchors]
-                for et in time_priority:
-                    for (x, y) in anchors:
-                        _gate(bay_id, x, y, oi, et)
-                        if len(cands) >= cand_cap:
-                            break
-                    if len(cands) >= cand_cap:
-                        break
-        pool[bi] = cands
-    return pool
-
-
-def _t37_pair_rel(raster, bays, blocks_data, ca, cb):
-    bay = bays[ca["bay"]]
-    return _exact_pair_rel(
-        raster, bay, blocks_data,
-        ca["bi"], ca["oi"], ca["x"], ca["y"],
-        cb["bi"], cb["oi"], cb["x"], cb["y"])
-
-
-class _T37Model:
-    def __init__(self, prob, base, window_ids, fixed_ids, pool, bays, bay_u,
-                 raster):
-        self.prob = prob
-        self.base = base
-        self.window_ids = window_ids
-        self.fixed_ids = fixed_ids
-        self.pool = pool
-        self.bays = bays
-        self.bay_u = bay_u
-        self.raster = raster
-        self.blocks_data = prob["blocks"]
-        w = prob.get("weights", {})
-        self.w1 = w.get("w1", 1.0)
-        self.w2 = w.get("w2", 1.0)
-        self.w3 = w.get("w3", 1.0)
-        self.m = _cp_model.CpModel()
-        self.z = {}
-        self.oe = {}
-        self.ox = {}
-        self.n_pair_combos = 0
-        self.n_hard = 0
-        self.n_ordcon = 0
-        self._records = []
-        self._nogoods = 0
-        self.pairs_capped = False
-        self.pairs_done = 0
-        self.pairs_total = 0
-
-    def _oe_var(self, bi, bj):
-        k = (bi, bj) if bi < bj else (bj, bi)
-        v = self.oe.get(k)
-        if v is None:
-            v = self.m.NewBoolVar(f"oe_{k[0]}_{k[1]}")
-            self.oe[k] = v
-        return k, v
-
-    def _ox_var(self, bi, bj):
-        k = (bi, bj) if bi < bj else (bj, bi)
-        v = self.ox.get(k)
-        if v is None:
-            v = self.m.NewBoolVar(f"ox_{k[0]}_{k[1]}")
-            self.ox[k] = v
-        return k, v
-
-    def build(self, build_deadline=None, t0=None):
-        m = self.m
-        t0 = t0 or time.time()
-        for bi in self.window_ids:
-            vs = [m.NewBoolVar(f"z_{bi}_{c}") for c in range(len(self.pool[bi]))]
-            for c, v in enumerate(vs):
-                self.z[(bi, c)] = v
-            m.AddExactlyOne(vs)
-
-        trng = {}
-        for bi in self.window_ids:
-            es = [c["entry"] for c in self.pool[bi]]
-            xs = [c["exit"] for c in self.pool[bi]]
-            trng[bi] = (min(es), max(es), min(xs), max(xs))
-
-        wl = list(self.window_ids)
-        self.pairs_total = len(wl) * (len(wl) - 1) // 2
-        done = 0
-        for ii in range(len(wl)):
-            bi = wl[ii]
-            min_ei, _me, _mxi, max_xi = trng[bi]
-            for jj in range(ii + 1, len(wl)):
-                bj = wl[jj]
-                done += 1
-                min_ej, _mej, _mxj, max_xj = trng[bj]
-                if min_ei > max_xj or min_ej > max_xi:
-                    continue
-                self._pair_constraints(bi, bj)
-            if build_deadline is not None and time.time() > build_deadline:
-                self.pairs_capped = True
-                self.pairs_done = done
-                break
-        self.pairs_done = done
-        self._objective()
-
-    def _pair_constraints(self, bi, bj):
-        ci, cj = self.pool[bi], self.pool[bj]
-        bd = self.blocks_data
-        for ai, ca in enumerate(ci):
-            ei, xi = ca["entry"], ca["exit"]
-            bay_a = ca["bay"]
-            for aj, cb in enumerate(cj):
-                if bay_a != cb["bay"]:
-                    continue
-                ej, xj = cb["entry"], cb["exit"]
-                if ei > xj or ej > xi:
-                    continue
-                col, e_ab, x_ab, e_ba, x_ba = _t37_pair_rel(
-                    self.raster, self.bays, bd, ca, cb)
-                if not (col or e_ab or x_ab or e_ba or x_ba):
-                    continue
-                self.n_pair_combos += 1
-                za, zb = self.z[(bi, ai)], self.z[(bj, aj)]
-
-                if col and (ei < xj and ej < xi):
-                    self.m.Add(za + zb <= 1)
-                    self.n_hard += 1
-                    self._records.append(("col", bi, bj, ai, aj))
-                    continue
-
-                if e_ab:
-                    if ej < ei < xj:
-                        self.m.Add(za + zb <= 1); self.n_hard += 1
-                        self._records.append(("e_ab_forced", bi, bj, ai, aj))
-                    elif ej == ei and xj > ei:
-                        self._require_entry_order(bi, bj, bi, za, zb)
-                        self._records.append(("e_ab_order", bi, bj, ai, aj))
-                if e_ba:
-                    if ei < ej < xi:
-                        self.m.Add(za + zb <= 1); self.n_hard += 1
-                        self._records.append(("e_ba_forced", bi, bj, ai, aj))
-                    elif ei == ej and xi > ej:
-                        self._require_entry_order(bi, bj, bj, za, zb)
-                        self._records.append(("e_ba_order", bi, bj, ai, aj))
-                if x_ab:
-                    if ej < xi < xj:
-                        self.m.Add(za + zb <= 1); self.n_hard += 1
-                        self._records.append(("x_ab_forced", bi, bj, ai, aj))
-                    elif xj == xi and ej < xi:
-                        self._require_exit_order(bi, bj, bj, za, zb)
-                        self._records.append(("x_ab_order", bi, bj, ai, aj))
-                if x_ba:
-                    if ei < xj < xi:
-                        self.m.Add(za + zb <= 1); self.n_hard += 1
-                        self._records.append(("x_ba_forced", bi, bj, ai, aj))
-                    elif xi == xj and ei < xj:
-                        self._require_exit_order(bi, bj, bi, za, zb)
-                        self._records.append(("x_ba_order", bi, bj, ai, aj))
-
-    def _require_entry_order(self, bi, bj, first, za, zb):
-        k, v = self._oe_var(bi, bj)
-        want = v if first == k[0] else v.Not()
-        self.m.AddBoolOr([za.Not(), zb.Not(), want])
-        self.n_ordcon += 1
-
-    def _require_exit_order(self, bi, bj, first, za, zb):
-        k, v = self._ox_var(bi, bj)
-        want = v if first == k[0] else v.Not()
-        self.m.AddBoolOr([za.Not(), zb.Not(), want])
-        self.n_ordcon += 1
-
-    def _objective(self):
-        m = self.m
-        n_bays = len(self.bays)
-        bd = self.blocks_data
-        cost_terms = []
-        wl_terms = [[] for _ in range(n_bays)]
-        for bi in self.window_ids:
-            wkl = int(round(bd[bi]["workload"]))
-            for cidx, c in enumerate(self.pool[bi]):
-                v = self.z[(bi, cidx)]
-                cst = int(round(_T37_WSCALE * (self.w1 * c["tard"]
-                                               + self.w3 * c["pen3"])))
-                if cst:
-                    cost_terms.append(cst * v)
-                wl_terms[c["bay"]].append((wkl, v))
-        base_load = [0.0] * n_bays
-        for bi in self.fixed_ids:
-            base_load[self.base[bi]["bay_id"]] += bd[bi]["workload"]
-
-        obj = [_T37_SU * t for t in cost_terms]
-        if n_bays >= 2 and self.w2 != 0:
-            su = [int(round(_T37_SU * self.bay_u[j])) for j in range(n_bays)]
-            load_expr, big = [], 0
-            for j in range(n_bays):
-                base = int(round(base_load[j]))
-                terms = [su[j] * base]; cap = su[j] * base
-                for (coef, var) in wl_terms[j]:
-                    terms.append(su[j] * coef * var); cap += su[j] * coef
-                load_expr.append(sum(terms)); big = max(big, cap)
-            zmax = m.NewIntVar(0, max(1, big), "zmax")
-            for p in range(n_bays):
-                for q in range(n_bays):
-                    if p != q:
-                        m.Add(zmax >= load_expr[p] - load_expr[q])
-            obj.append(int(round(_T37_WSCALE * self.w2)) * zmax)
-        m.Minimize(sum(obj))
-
-    def _champ_hints(self):
-        oevals = {k: (1 if _t37_champ_order(k[0], k[1]) else 0) for k in self.oe}
-        oxvals = {k: (1 if _t37_champ_order(k[0], k[1]) else 0) for k in self.ox}
-        return oevals, oxvals
-
-    def add_warm_start(self):
-        oevals, oxvals = self._champ_hints()
-        for bi in self.window_ids:
-            for cidx in range(len(self.pool[bi])):
-                self.m.AddHint(self.z[(bi, cidx)], 1 if cidx == 0 else 0)
-        for k, v in self.oe.items():
-            self.m.AddHint(v, oevals[k])
-        for k, v in self.ox.items():
-            self.m.AddHint(v, oxvals[k])
-
-
-def _t37_diagnose_champion(mdl):
-    zsel = {bi: 0 for bi in mdl.window_ids}
-    for (kind, bi, bj, ai, aj) in mdl._records:
-        if zsel[bi] != ai or zsel[bj] != aj:
-            continue
-        oij = _t37_champ_order(bi, bj)
-        if kind == "col":
-            return False
-        if kind.endswith("_forced"):
-            return False
-        if kind == "e_ab_order" and not oij:
-            return False
-        if kind == "e_ba_order" and oij:
-            return False
-        if kind == "x_ab_order" and oij:
-            return False
-        if kind == "x_ba_order" and not oij:
-            return False
-    return True
-
-
-def _t37_gate0(mdl, hard_deadline):
-    """Quiet Gate0: the champion window must be ACCEPTED as a feasible hint by
-    the new model. Cheap python diagnostic first, then a CP-SAT clone solve of
-    the fixed champion (capped by hard_deadline). Returns bool."""
-    if not _t37_diagnose_champion(mdl):
-        return False
-    left = hard_deadline - time.time()
-    if left < 2.0:
-        return False
-    m2 = mdl.m.Clone()
-    oevals, oxvals = mdl._champ_hints()
-    for bi in mdl.window_ids:
-        for cidx in range(len(mdl.pool[bi])):
-            m2.Add(mdl.z[(bi, cidx)] == (1 if cidx == 0 else 0))
-    for k, v in mdl.oe.items():
-        m2.Add(v == oevals[k])
-    for k, v in mdl.ox.items():
-        m2.Add(v == oxvals[k])
-    solver = _cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = float(max(1.0, min(30.0, left)))
-    solver.parameters.num_search_workers = 4
-    st = solver.Solve(m2)
-    return st in (_cp_model.OPTIMAL, _cp_model.FEASIBLE)
-
-
-def _t37_topo(ids, edges):
-    """Kahn topo sort with block_id tie-break. Returns ordered list or None."""
-    adj = {u: set() for u in ids}
-    indeg = {u: 0 for u in ids}
-    for (u, v) in edges:
-        if v not in adj[u]:
-            adj[u].add(v); indeg[v] += 1
-    out = []
-    avail = sorted(u for u in ids if indeg[u] == 0)
-    while avail:
-        u = avail.pop(0)
-        out.append(u)
-        for w in sorted(adj[u]):
-            indeg[w] -= 1
-            if indeg[w] == 0:
-                avail.append(w); avail.sort()
-    return out if len(out) == len(ids) else None
-
-
-def _t37_build_ops_ordered(assign, blocks_data, bays):
-    """Emit operations with a crane-aware within-tick order (topo over exact
-    entry_blocked/exit_blocked relations, block_id tie-break). Cycle -> block_id
-    fallback (official checker is the final gate)."""
-    blk = {bid: _mkblock(bid, blocks_data[bid], a["x"], a["y"], a["orient_idx"])
-           for bid, a in assign.items()}
-    entries_bt, exits_bt = {}, {}
-    for a in assign.values():
-        entries_bt.setdefault((a["bay_id"], a["entry_time"]), []).append(
-            a["block_id"])
-        exits_bt.setdefault((a["bay_id"], a["exit_time"]), []).append(
-            a["block_id"])
-
-    def order_entries(bay_id, ids):
-        bay = bays[bay_id]
-        edges = set()
-        for i in range(len(ids)):
-            for j in range(i + 1, len(ids)):
-                u, v = ids[i], ids[j]
-                buv = _entry_blocked(bay, blk[v], blk[u])
-                bvu = _entry_blocked(bay, blk[u], blk[v])
-                if buv:
-                    edges.add((u, v))
-                if bvu:
-                    edges.add((v, u))
-                if not buv and not bvu:
-                    edges.add((min(u, v), max(u, v)))
-        r = _t37_topo(ids, edges)
-        return r if r is not None else sorted(ids)
-
-    def order_exits(bay_id, ids):
-        bay = bays[bay_id]
-        edges = set()
-        for i in range(len(ids)):
-            for j in range(i + 1, len(ids)):
-                u, v = ids[i], ids[j]
-                buv = _exit_blocked(bay, blk[v], blk[u])
-                bvu = _exit_blocked(bay, blk[u], blk[v])
-                if buv:
-                    edges.add((v, u))
-                if bvu:
-                    edges.add((u, v))
-                if not buv and not bvu:
-                    edges.add((min(u, v), max(u, v)))
-        r = _t37_topo(ids, edges)
-        return r if r is not None else sorted(ids)
-
-    operations = {}
-    ticks = sorted({t for (_, t) in entries_bt} | {t for (_, t) in exits_bt})
-    n_bays = len(bays)
-    for t in ticks:
-        lst = []
-        for bay_id in range(n_bays):
-            ids = exits_bt.get((bay_id, t))
-            if ids:
-                for bid in order_exits(bay_id, ids):
-                    a = assign[bid]
-                    lst.append({"type": "EXIT", "block_id": bid,
-                                "bay_id": a["bay_id"]})
-        for bay_id in range(n_bays):
-            ids = entries_bt.get((bay_id, t))
-            if ids:
-                for bid in order_entries(bay_id, ids):
-                    a = assign[bid]
-                    lst.append({"type": "ENTRY", "block_id": bid,
-                                "bay_id": a["bay_id"], "x": a["x"], "y": a["y"],
-                                "orient_idx": a["orient_idx"]})
-        operations[str(t)] = lst
-    return operations
-
-
-def _t37_build_band(prob, base, bays, bay_u, raster, t1, t2, win_cap,
-                    build_deadline):
-    """Construct the presence-window pool + CP-SAT model. Returns
-    (mdl|None, pool, window_ids)."""
-    bd = prob["blocks"]
-    window_ids = _t37_window_ids(base, t1, t2, True, win_cap)
-    if len(window_ids) < 2:
-        return None, None, window_ids
-    win_set = set(window_ids)
-    fixed_ids = [bi for bi in base if bi not in win_set]
-    pool = _t37_build_pool(base, bd, bays, raster, window_ids, fixed_ids,
-                           cand_cap=_T37_PRESENCE_CAND_CAP,
-                           per_bay_anchors=_T37_PRESENCE_ANCHORS,
-                           deadline=build_deadline)   # v41: pool build guarded
-    if pool is None:
-        return None, None, window_ids
-    mdl = _T37Model(prob, base, window_ids, fixed_ids, pool, bays, bay_u, raster)
-    mdl.build(build_deadline=build_deadline)
-    return mdl, pool, window_ids
-
-
-def _t37_solve_model(prob, base, mdl, pool, window_ids, bays, bay_u, budget_s,
-                     hard_deadline):
-    """Solve, realize crane-aware, verify official; lazy no-good repair (<=3
-    rounds). Every solver.Solve is capped by hard_deadline. Returns
-    (new_assign|None, delta). new_assign strictly improves internal objective
-    AND passes the official check_feasibility, else None."""
-    bd = prob["blocks"]
-    w = prob.get("weights", {})
-    w1, w2, w3 = w.get("w1", 1.0), w.get("w2", 1.0), w.get("w3", 1.0)
-    win_set = set(window_ids)
-    base_obj = _objective(base, bd, bays, bay_u, w1, w2, w3)[0]
-
-    solver = _cp_model.CpSolver()
-    solver.parameters.num_search_workers = 8
-    solver.parameters.random_seed = 1
-
-    for rnd in range(3):
-        left = hard_deadline - time.time()
-        if left < 2.0:
-            return None, 0.0
-        solver.parameters.max_time_in_seconds = float(max(1.0,
-                                                          min(budget_s, left)))
-        st = solver.Solve(mdl.m)
-        if st not in (_cp_model.OPTIMAL, _cp_model.FEASIBLE):
-            return None, 0.0
-        # v41: the realize + official check below cost O(cf) each round and
-        # were unguarded -- past the hard deadline, discard instead of verify.
-        if time.time() > hard_deadline:
-            return None, 0.0
-        new_assign = {bi: dict(a) for bi, a in base.items()}
-        sel = {}
-        for bi in window_ids:
-            chosen = None
-            for cidx, c in enumerate(pool[bi]):
-                if solver.Value(mdl.z[(bi, cidx)]) == 1:
-                    chosen = c; sel[bi] = cidx; break
-            if chosen is None:
-                chosen = pool[bi][0]; sel[bi] = 0
-            a = new_assign[bi]
-            a["bay_id"] = chosen["bay"]; a["x"] = chosen["x"]
-            a["y"] = chosen["y"]; a["orient_idx"] = chosen["oi"]
-            a["entry_time"] = chosen["entry"]; a["exit_time"] = chosen["exit"]
-
-        ops = _t37_build_ops_ordered(new_assign, bd, bays)
-        res = check_feasibility(prob, {"operations": ops})
-        if res["feasible"]:
-            delta = res["objective"] - base_obj
-            if delta < -0.5:
-                return new_assign, delta
-            return None, delta
-
-        bad = set()
-        for vtext in res.get("violations", []):
-            for mtc in re.findall(r"block (\d+)", vtext):
-                b = int(mtc)
-                if b in win_set:
-                    bad.add(b)
-        if not bad:
-            break
-        mdl.m.Add(sum(mdl.z[(b, sel[b])] for b in bad) <= len(bad) - 1)
-        mdl._nogoods += 1
-    return None, 0.0
-
-
-def _t37_pick_bands(base, blocks_data, w=_T37_BAND_W, k=2):
-    """queue(t) = count of released-but-not-entered blocks per tick. Return the
-    top-`k` non-overlapping width-`w` bands [t1,t2] by peak queue (peak > 0)."""
-    import bisect
-    ev = {}
-    for bi, a in base.items():
-        r = int(blocks_data[bi]["release_time"])
-        e = int(a["entry_time"])
-        if r < e:
-            ev[r] = ev.get(r, 0) + 1
-            ev[e] = ev.get(e, 0) - 1
-    if not ev:
-        return []
-    cum_ticks, cum_vals = [], []
-    run = 0
-    for t in sorted(ev):
-        run += ev[t]
-        cum_ticks.append(t); cum_vals.append(run)
-
-    def q_at(t):
-        i = bisect.bisect_right(cum_ticks, t) - 1
-        return cum_vals[i] if i >= 0 else 0
-
-    scored = []
-    for s in cum_ticks:                       # anchor bands at event ticks
-        peak = q_at(s)
-        lo_i = bisect.bisect_left(cum_ticks, s)
-        hi_i = bisect.bisect_left(cum_ticks, s + w)
-        for j in range(lo_i, hi_i):
-            if cum_vals[j] > peak:
-                peak = cum_vals[j]
-        scored.append((peak, s))
-    scored.sort(key=lambda x: (-x[0], x[1]))
-    chosen = []
-    for peak, s in scored:
-        if peak <= 0:
-            continue
-        if all(abs(s - s2) >= w for (_, s2) in chosen):
-            chosen.append((peak, s))
-        if len(chosen) >= k:
-            break
-    return [(s, s + w) for (_, s) in chosen]
-
-
-def _tail37_order(prob_info, champ_assign, bays, bay_u, w1, w2, w3,
-                  t_start, timelimit, forced, res, cf_cost=1.0):
-    """v37 order-aware presence-window CP-SAT tail. Runs AFTER the existing
-    tails on the current champion. Returns an improved {"operations": ...} that
-    STRICTLY beats the champion's official objective (crane-aware ordering), or
-    None (caller keeps the champion). Hard deadline discipline: never overruns
-    t_start + timelimit and leaves >=10s slack for the final ops build.
-
-    Gate: remaining budget >= 120s AND (forced instance OR w1 >= 6000 with
-    tardy blocks present). Skips silently otherwise."""
-    if _t37_cp() is None or not _HAVE_NUMPY:
-        return None
-    n_bays = len(bays)
-    if n_bays < 2:
-        return None
-    deadline = t_start + timelimit
-    if deadline - time.time() < 120.0:
-        return None
-    blocks_data = prob_info["blocks"]
-    if not forced:
-        # v38: w1 gate dropped -- measured evidence (prob_37 w1=3333: 12
-        # reachable units vs prob_33 w1=6667: 1) says low-w1 instances hold
-        # MORE order units, not fewer. Tardy-present + budget gates suffice;
-        # min-wins accept protects quality.
-        if not any(a["exit_time"] > blocks_data[bi]["due_date"]
-                   for bi, a in champ_assign.items()):
-            return None
-
-    base_obj_off = res["objective"]        # champion official objective
-    working = {bi: dict(a) for bi, a in champ_assign.items()}
-    # v38: k=2 -> k=6. Offline mid-tier sweeps needed 3 accepted bands on
-    # prob_37; forced giants leave ~250s of overflow idle after 2 bands. The
-    # per-band budget share below already deadline-guards extra bands.
-    bands = _t37_pick_bands(working, blocks_data, k=6)
-    if not bands:
-        return None
-
-    raster = _Raster(prob_info, bays)
-    improved = False
-    for band_ix, (t1, t2) in enumerate(bands):
-        now = time.time()
-        remaining = deadline - now
-        # Deadline discipline: stop unless enough budget for a band + reserve.
-        # hard_deadline leaves a 20s reserve before the true deadline (>=10s of
-        # which is slack for the final ops build).
-        if remaining < 30.0:
-            break
-        # v41: the 20s reserve is sized for a ~0.15s-cf machine; scale it with
-        # the measured verify cost so realize+verify (and the final official
-        # check) always fit inside the true deadline.
-        hard_deadline = deadline - max(20.0, 4.0 * cf_cost)
-        if now > hard_deadline - 5.0:
-            break
-        bands_left = len(bands) - band_ix
-        share = max(5.0, (hard_deadline - now) / max(1, bands_left))
-        build_deadline = now + min(_T37_BUILD_CAP_S, share * 0.5)
-        try:
-            mdl, pool, window_ids = _t37_build_band(
-                prob_info, working, bays, bay_u, raster, t1, t2,
-                _T37_WIN_CAP, build_deadline)
-            if mdl is None:
-                continue
-            if not _t37_gate0(mdl, hard_deadline):
-                continue
-            mdl.add_warm_start()
-            solve_budget = max(3.0, hard_deadline - time.time())
-            na, delta = _t37_solve_model(
-                prob_info, working, mdl, pool, window_ids, bays, bay_u,
-                solve_budget, hard_deadline)
-            if na is not None and delta < -0.5:
-                working = na
-                improved = True
-        except Exception:
-            continue
-
-    if not improved:
-        return None
-    # Final official verification + strict-improvement accept (min-wins).
-    # v41: the 10s floor assumed a fast checker; require room for the actual
-    # measured ops-build + official check cost.
-    if deadline - time.time() < max(10.0, 2.0 * cf_cost):
-        return None
-    try:
-        ops = _t37_build_ops_ordered(working, blocks_data, bays)
-        fres = check_feasibility(prob_info, {"operations": ops})
-    except Exception:
-        return None
-    if fres.get("feasible") and fres["objective"] < base_obj_off - 0.5:
-        return {"operations": ops}
-    return None
-
-
 def _algorithm_portfolio(prob_info, timelimit, t_start):
-    # v36 BUDGET CAP (v39 port). The portfolio SEARCH is paced by port_limit =
-    # min(timelimit, 600): at timelimit > 600 it runs the SAME basins as a 600s
-    # run (killing the 900s re-pacing lottery), and the overflow goes wholly to
-    # the post-race tails, which pace off the TRUE deadline (t_start +
-    # timelimit). `_overflow` is the byte-identity guard: at timelimit <= 600 it
-    # is False and port_limit == timelimit, so every routed site and both tail
-    # caps are identical to jv9. The return-safety cutoffs (hard_stop, abs_stop)
-    # use the TRUE deadline -- spare seconds, no reason to rush verification.
-    # v40 SCALED CAP: the flat 600s cap is correct at timelimit <= 900 (tails
-    # proved -65k on prob_38 @900 with zero search cost) but catastrophic at
-    # 1800s: probes (2026-07-21, heuristic_40.md) show jv9's uncapped search
-    # lands 36.34M on prob_38 @1800 while the capped v39 returns 38.13M at
-    # 627s, wasting 1170s. Search now keeps everything beyond a flat 300s
-    # tail window; at timelimit <= 900 this reduces to the v36/v39 pacing.
-    if timelimit <= 600.0:
-        port_limit = timelimit
-    else:
-        port_limit = max(600.0, timelimit - 300.0)
-    _overflow = timelimit > port_limit + 1e-9
     import multiprocessing as _mp
     nw = min(4, _mp.cpu_count() or 1)
     if nw < 2:
@@ -7143,16 +6395,16 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
         # for the parent (insurance build, queue drain, merge tail). On <=5
         # core machines this is a no-op (never REDUCES nw below the old 4).
         nw = max(nw, min(8, _mp.cpu_count() or 1))  # jv9: full width
-    reserve = min(max(4.0, port_limit * 0.08), 12.0)   # v36: port_limit-paced
-    search_deadline = t_start + port_limit * 0.95 - reserve
+    reserve = min(max(4.0, timelimit * 0.08), 12.0)
+    search_deadline = t_start + timelimit * 0.95 - reserve
     ctx = _mp.get_context()
     q = ctx.Queue()
     inboxes = [ctx.Queue() for _ in range(nw)]  # v11 island broadcasts
     procs = []
     for wid in range(nw):
         p = ctx.Process(target=_worker_main,
-                        args=(wid, prob_info, port_limit, t_start, q,
-                              inboxes[wid]),   # v36: workers pace off port_limit
+                        args=(wid, prob_info, timelimit, t_start, q,
+                              inboxes[wid]),
                         daemon=True)
         p.start()
         procs.append(p)
@@ -7207,7 +6459,7 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
                 break
     # Grace drain: workers check their deadline once per improver round, and a
     # round can take seconds on n=250 -- wait briefly for the final puts.
-    grace = t_start + port_limit * 0.95 - reserve * 0.55   # v36: port_limit-paced
+    grace = t_start + timelimit * 0.95 - reserve * 0.55
     while time.time() < grace and any(p.is_alive() for p in procs):
         try:
             cands.append(q.get(timeout=0.25))
@@ -7278,102 +6530,10 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
             _nver += 1
             sol = {"operations": _build_operations(assign)}
             try:
-                _cf_t0 = time.time()
                 res = check_feasibility(prob_info, sol)
-                cf_cost = max(0.3, time.time() - _cf_t0)   # v41: measured
             except Exception:
                 continue
             if res["feasible"]:
-                # v40 39b MERGE-ON-FORCED: recombine the queue-drained pool on
-                # the verified champion BEFORE tail35/t37. Overflow-gated (TL >
-                # 600) so the merge spends only overflow time, never
-                # search-reserve. Budget: at most HALF the remaining window at
-                # its start (passed as a synthetic timelimit -- _merge_tail's
-                # only use of t_start/timelimit is the absolute end t_start +
-                # timelimit), leaving tail35 (>=10s gate) and t37 (>=120s gate)
-                # their room. _merge_tail itself is min-wins + official-verified;
-                # the re-check here rebinds assign/sol/res so the downstream
-                # tails see the post-merge champion.
-                if _overflow:
-                    try:
-                        _mg_rem = (t_start + timelimit) - time.time()
-                        _mg_tl = ((t_start + timelimit - 0.5 * _mg_rem)
-                                  - t_start)
-                        m_assign = _merge_tail(
-                            prob_info, bays, bay_u, w1, w2, w3, cands, assign,
-                            res["objective"], t_start, _mg_tl,
-                            overflow=_overflow, allow_forced=True,
-                            cf_cost=cf_cost)
-                        if (m_assign is not assign
-                                and time.time() < t_start + timelimit
-                                - cf_cost - 0.5):   # v41: verify must fit
-                            m_sol = {"operations": _build_operations(m_assign)}
-                            m_res = check_feasibility(prob_info, m_sol)
-                            if (m_res["feasible"] and m_res["objective"]
-                                    < res["objective"] - 1e-9):
-                                assign, sol, res = m_assign, m_sol, m_res
-                    except Exception:
-                        pass
-                # v35 FORCED OBJ2/OBJ3-ONLY TAIL: shrunk JOINT CP-SAT over
-                # time-frozen positions (swaps/chains). Strictly post-race and
-                # post-winner-selection. Fires only with real spare time (the
-                # measured forced situation: workers early-terminate ~35-50s
-                # before the deadline). obj1 is frozen by construction; the whole
-                # solved assignment is re-verified by the official
-                # check_feasibility below (champion is candidate 0, so the model
-                # can never be internally worse), so a failed/regressive tail
-                # cannot degrade the champion `sol`.
-                rem_start = t_start + timelimit - time.time()
-                if rem_start >= 10.0:
-                    try:
-                        # v41: reserve room for the post-tail verify (ops build
-                        # + official check) out of the tail's own budget; on a
-                        # ~0.15s-cf machine this stays the historical 3.0s.
-                        tail_dl = (t_start + timelimit
-                                   - max(3.0, 2.0 * cf_cost + 1.0))
-                        t_assign, t_mv, t_cavg, t_swaps = _tail35_cpsat(
-                            prob_info, assign, bays, bay_u, w1, w2, w3, tail_dl,
-                            overflow=_overflow)   # v36: bigger model on overflow
-                        t_wdelta = 0.0
-                        if t_assign is not None:
-                            _to, _to1, t_o2, t_o3 = _objective(
-                                t_assign, blocks_data, bays, bay_u, w1, w2, w3)
-                            t_wdelta = (w2 * (t_o2 - res["obj2"])
-                                        + w3 * (t_o3 - res["obj3"]))
-                        if _dbg:
-                            print(f"[tail35] forced=True movable={t_mv} "
-                                  f"cands_avg={t_cavg:.1f} swaps={t_swaps} "
-                                  f"wdelta={t_wdelta:.1f} rem_start={rem_start:.1f}",
-                                  flush=True)
-                        if (t_assign is not None
-                                and time.time() < t_start + timelimit
-                                - cf_cost - 0.5):   # v41: verify must fit
-                            t_sol = {"operations": _build_operations(t_assign)}
-                            t_res = check_feasibility(prob_info, t_sol)
-                            if (t_res["feasible"]
-                                    and abs(t_res["obj1"] - res["obj1"]) <= 1e-9
-                                    and t_res["objective"] < res["objective"] - 1e-9):
-                                return t_sol
-                    except Exception:
-                        pass
-                # v37 CALL SITE (single addition; existing tails above are
-                # token-identical to v36). Order-aware presence-window CP-SAT
-                # tail, run AFTER the existing tails on the race champion
-                # `assign` (the tail35 obj2/obj3 swap tail returns early on its
-                # rare wins; on the space-saturated forced giants it declines
-                # and falls through here -- exactly where the measured obj1
-                # wins on prob_38/27 land). Elapsed-guarded (>=120s remaining),
-                # official-checker gated, min-wins: returns an improved sol only
-                # on STRICT official improvement, else `sol` is returned
-                # unchanged (non-regression).
-                try:
-                    t37_sol = _tail37_order(
-                        prob_info, assign, bays, bay_u, w1, w2, w3,
-                        t_start, timelimit, _forced, res, cf_cost=cf_cost)
-                    if t37_sol is not None:
-                        return t37_sol
-                except Exception:
-                    pass
                 return sol
         # Last resort: empty-bay (structurally feasible).
         return {"operations": _build_operations(fallback)}
@@ -7393,49 +6553,19 @@ def _algorithm_portfolio(prob_info, timelimit, t_start):
         _nver += 1
         sol = {"operations": _build_operations(assign)}
         try:
-            _cf_t0 = time.time()
             res = check_feasibility(prob_info, sol)
-            cf_cost = max(0.3, time.time() - _cf_t0)   # v41: measured
         except Exception:
             continue
         if res["feasible"]:
             try:
                 final_assign = _merge_tail(
                     prob_info, bays, bay_u, w1, w2, w3, cands, assign,
-                    w_obj, t_start, timelimit, _overflow,   # v36: overflow knob
-                    cf_cost=cf_cost)
+                    w_obj, t_start, timelimit)
             except Exception:
                 final_assign = assign
-            # v38 NON-FORCED ORDER-TAIL CALL SITE. _tail37_order always had a
-            # non-forced gate but no non-forced caller -- the 8 non-forced
-            # cells in 21-40 (~10.6M mass) never saw the order tail. Runs on
-            # the POST-merge champion; a fresh official check is the min-wins
-            # base; on None (or any failure) the pre-v38 return is unchanged.
             if final_assign is assign:
-                t37_base_sol, t37_base_res = sol, res
-            else:
-                # v41: _merge_tail already official-verified `final_assign`
-                # (it only returns a non-winner on a passed check). If there is
-                # no room left for a redundant re-check, fall back to the
-                # already-verified `sol` rather than risk an overrun.
-                if time.time() > t_start + timelimit - cf_cost - 0.5:
-                    return {"operations": _build_operations(final_assign)}
-                t37_base_sol = {"operations": _build_operations(final_assign)}
-                try:
-                    t37_base_res = check_feasibility(prob_info, t37_base_sol)
-                except Exception:
-                    t37_base_res = None
-                if not (t37_base_res and t37_base_res.get("feasible")):
-                    return t37_base_sol
-            try:
-                t37_sol = _tail37_order(
-                    prob_info, final_assign, bays, bay_u, w1, w2, w3,
-                    t_start, timelimit, _forced, t37_base_res, cf_cost=cf_cost)
-                if t37_sol is not None:
-                    return t37_sol
-            except Exception:
-                pass
-            return t37_base_sol
+                return sol
+            return {"operations": _build_operations(final_assign)}
     # Last resort: empty-bay (structurally feasible).
     return {"operations": _build_operations(fallback)}
 
